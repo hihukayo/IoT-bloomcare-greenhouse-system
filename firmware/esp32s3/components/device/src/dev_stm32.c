@@ -272,7 +272,7 @@ void dev_stm32_init(void)
     s_bad_seen = 0U;
     memset(&s_stats, 0, sizeof(s_stats));
     LOGI("waiting for node %u frames on UART%d ...",
-            (unsigned)LINK_ADDR_STM32, (int)BSP_UART_PORT);
+            (unsigned)LINK_ADDR_NODE1, (int)BSP_UART_PORT);
 }
 
 /**
@@ -305,7 +305,7 @@ static esp_err_t dev_stm32_transact(uint8_t cmd, const uint8_t *payload, uint8_t
     }
     seq = s_tx_seq;
     s_tx_seq++;                                 /* a new transaction takes a new SEQ */
-    total = link_frame_build(frame, sizeof(frame), LINK_ADDR_STM32, cmd, seq, payload, len);
+    total = link_frame_build(frame, sizeof(frame), LINK_ADDR_NODE1, cmd, seq, payload, len);
     if (total == 0U)
     {
         return ESP_ERR_INVALID_ARG;

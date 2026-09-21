@@ -89,14 +89,14 @@ void Task_Sensor_Poll(uint32_t now_ms)
         if (s_online == TASK_SENSOR_OFFLINE)
         {
             s_online = TASK_SENSOR_ONLINE;
-            LOGI("node %u is online", (unsigned)LINK_ADDR_STM32);
+            LOGI("node %u is online", (unsigned)LINK_ADDR_NODE1);
         }
     }
     if ((s_online == TASK_SENSOR_ONLINE) && ((uint32_t)(now_ms - s_last_rx_ms) >= s_timeout_ms))
     {
         s_online = TASK_SENSOR_OFFLINE;
         LOGW("node %u went offline, silent for %lu ms",
-             (unsigned)LINK_ADDR_STM32, (unsigned long)(uint32_t)(now_ms - s_last_rx_ms));
+             (unsigned)LINK_ADDR_NODE1, (unsigned long)(uint32_t)(now_ms - s_last_rx_ms));
     }
 }
 

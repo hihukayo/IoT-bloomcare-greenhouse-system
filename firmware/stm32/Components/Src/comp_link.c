@@ -112,7 +112,7 @@ static uint8_t Link_SendFrame(uint8_t cmd, uint8_t seq, const uint8_t *payload, 
     s_tx_frame[0] = LINK_SOF0;
     s_tx_frame[1] = LINK_SOF1;
     s_tx_frame[LINK_OFF_VER] = LINK_VER;
-    s_tx_frame[LINK_OFF_ADDR] = LINK_ADDR_LOCAL;
+    s_tx_frame[LINK_OFF_ADDR] = LINK_ADDR_NODE1;
     s_tx_frame[LINK_OFF_LEN] = payload_len;
     s_tx_frame[LINK_OFF_CMD] = cmd;
     s_tx_frame[LINK_OFF_SEQ] = seq;
@@ -209,7 +209,7 @@ static void Link_OnFrame(const uint8_t *frame)
     uint8_t seq  = frame[LINK_OFF_SEQ];
     uint8_t reason;
 
-    if ((addr != LINK_ADDR_LOCAL) && (addr != LINK_ADDR_BROADCAST))
+    if ((addr != LINK_ADDR_NODE1) && (addr != LINK_ADDR_BROADCAST))
     {
 #ifdef LINK_DEBUG
         g_link_frame_other++;

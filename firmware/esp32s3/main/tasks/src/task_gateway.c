@@ -47,12 +47,12 @@ void Task_Gateway_Poll(uint32_t now_ms)
 #if TASK_GATEWAY_SELFTEST
     if ((uint32_t)(now_ms - s_test_tick) >= 30000U)
     {
-        dev_item_t items[TASK_SENSOR_MAX_VALUES];
+        dev_item_t items[LINK_QUERY_MAX_ITEMS];
         uint8_t    got = 0U;
         esp_err_t  err;
 
         s_test_tick = now_ms;
-        err = Task_Gateway_RequestValues(0U, items, (uint8_t)TASK_SENSOR_MAX_VALUES, &got);
+        err = Task_Gateway_RequestValues(0U, items, (uint8_t)LINK_QUERY_MAX_ITEMS, &got);
         LOGI("selftest: query -> %s, %u item(s)", esp_err_to_name(err), (unsigned)got);
     }
 #endif

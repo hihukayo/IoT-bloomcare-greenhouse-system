@@ -12,6 +12,7 @@
 
 #include <stdint.h>
 #include "esp_err.h"
+#include "link_protocol_defs.h"
 
 /** One data item of the link: ID plus value, see LINK_ID_xxx. */
 typedef struct
@@ -22,6 +23,13 @@ typedef struct
 
 /** Highest number of items one frame of the link is expected to carry. */
 #define DEV_STM32_MAX_ITEMS     16
+
+/* One whole QUERY answer has to fit into the buffer of this layer. The node
+   caps its answer at LINK_QUERY_MAX_ITEMS, so the two numbers can never
+   drift apart in silence: too small a buffer here stops the build. */
+#if DEV_STM32_MAX_ITEMS < LINK_QUERY_MAX_ITEMS
+#error "DEV_STM32_MAX_ITEMS must not be smaller than LINK_QUERY_MAX_ITEMS"
+#endif
 
 /** Link counters, all of them restart at zero when the gateway boots. */
 typedef struct
