@@ -22,6 +22,11 @@
  * Channel ids are device level names. The Tasks layer maps them onto
  * the item ids of the protocol (Components/comp_link.h), which keeps
  * this layer independent of the wire format.
+ *
+ * A driver scales its own value to hundredths of its unit, because the
+ * resolution differs per chip: a DHT22 resolves 0.1 C and 0.1 %RH while
+ * a soil probe may only resolve 1 %. Doing it here keeps the Tasks
+ * layer free of a per chip factor.
  * ------------------------------------------------------------------ */
 
 #define DEV_CH_TEMP     0x01U
@@ -32,11 +37,11 @@
 /** One value produced by a sensor, in the unit of that sensor. */
 typedef struct
 {
-    uint8_t ch;      /* DEV_CH_xxx            */
-    int32_t value;   /* raw value, not scaled */
+    uint8_t ch;      /* DEV_CH_xxx                                */
+    int32_t value;   /* unit x 100, so 2340 is 23.40 of that unit */
 } Dev_Value_t;
 
-/** A sensor: one device, possibly several values per shot (DHT11 = T + RH). */
+/** A sensor: one device, possibly several values per shot (DHT22 = T + RH). */
 typedef struct
 {
     const char *name;

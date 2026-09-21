@@ -616,7 +616,6 @@
               <FileType>1</FileType>
               <FilePath>..\BSP\Src\bsp_uart.c</FilePath>
             </File>
-
           </Files>
         </Group>
         <Group>
@@ -643,9 +642,9 @@
           <GroupName>Device/Sensors</GroupName>
           <Files>
             <File>
-              <FileName>sen_dht11.c</FileName>
+              <FileName>sen_dht22.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\Device\Sensors\Src\sen_dht11.c</FilePath>
+              <FilePath>..\Device\Sensors\Src\sen_dht22.c</FilePath>
             </File>
           </Files>
         </Group>

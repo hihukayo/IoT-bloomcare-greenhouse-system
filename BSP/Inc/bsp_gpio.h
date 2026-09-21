@@ -14,7 +14,7 @@
 /**
  * @brief  Switch on the clock of one GPIO port.
  * @note   Called with the CubeMX label of the pin, for example:
- *             BSP_GPIO_ClkEnable(SEN_DHT11_GPIO_PORT);
+ *             BSP_GPIO_ClkEnable(SEN_DHT22_GPIO_PORT);
  *         Building the HAL macro by token pasting is deliberately not used:
  *         GPIOG and friends are macros themselves (a pointer constant), so
  *         they cannot be pasted into __HAL_RCC_GPIOx_CLK_ENABLE().

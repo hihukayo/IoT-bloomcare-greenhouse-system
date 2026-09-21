@@ -7,7 +7,7 @@
   ******************************************************************************
   */
 #include "dev_manager.h"
-#include "sen_dht11.h"
+#include "sen_dht22.h"
 #include <stdio.h>
 
 /* ------------------------------------------------------------------
@@ -21,7 +21,7 @@
  * ------------------------------------------------------------------ */
 static const Dev_Sensor_t *const s_sensors[] =
 {
-    &g_sen_dht11,
+    &g_sen_dht22,
 };
 
 static const Dev_Actuator_t *const s_actuators[] =

@@ -98,7 +98,9 @@
 #define LINK_ID_HUMI            0x02U
 #define LINK_ID_REPORT_MS       0xF1U   /* CONTROL: report period in ms      */
 #define LINK_ID_ERRCODE         0xF2U
-#define LINK_ERR_DHT11          1
+/* Fault codes carried in LINK_ID_ERRCODE: the node side log says which
+   sensor failed, the code only tells that one of them did. */
+#define LINK_ERR_SENSOR         1
 
 /** One data item: ID plus int32 value, values are scaled by 100. */
 typedef struct

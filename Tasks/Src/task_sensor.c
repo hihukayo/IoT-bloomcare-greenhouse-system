@@ -11,8 +11,8 @@
 #include "comp_link.h"
 #include <stdio.h>
 
-#define TASK_SENSOR_DEFAULT_MS   2000U   /* DHT11 wants >= 2s between reads */
-#define TASK_SENSOR_STARTUP_MS   1000U   /* DHT11 needs ~1s to settle       */
+#define TASK_SENSOR_DEFAULT_MS   2000U   /* DHT22 wants >= 2s between reads */
+#define TASK_SENSOR_STARTUP_MS   2000U   /* DHT22 settles in 1s, one period is safe */
 #define TASK_SENSOR_MAX_VALUES   8U      /* room for a few more sensors     */
 
 static uint32_t s_period_ms = TASK_SENSOR_DEFAULT_MS;
@@ -72,6 +72,32 @@ static const char *ChannelUnit(uint8_t ch)
 }
 
 /**
+ * @brief  Print one device value that the driver scaled by 100.
+ * @param  ch:    device channel, DEV_CH_xxx.
+ * @param  value: value in hundredths of the unit of that channel.
+ */
+static void ChannelPrintValue(uint8_t ch, int32_t value)
+{
+    int32_t whole = value / 100;
+    int32_t frac = value % 100;
+
+    if (frac < 0)
+    {
+        frac = -frac;
+    }
+    if ((value < 0) && (whole == 0))
+    {
+        printf("[OK  #%lu] %s = -0.%02ld %s\r\n", (unsigned long)s_ok_cnt,
+               ChannelName(ch), (long)frac, ChannelUnit(ch));
+    }
+    else
+    {
+        printf("[OK  #%lu] %s = %ld.%02ld %s\r\n", (unsigned long)s_ok_cnt,
+               ChannelName(ch), (long)whole, (long)frac, ChannelUnit(ch));
+    }
+}
+
+/**
  * @brief  Read every sensor once and store the result in the cache.
  * @retval number of items in the cache, 0 when every sensor failed.
  */
@@ -96,11 +122,9 @@ static uint8_t Task_Sensor_Sample(void)
         {
             continue;                            /* channel nobody subscribed to */
         }
-        printf("[OK  #%lu] %s = %ld %s\r\n",
-               (unsigned long)s_ok_cnt, ChannelName(values[i].ch),
-               (long)values[i].value, ChannelUnit(values[i].ch));
+        ChannelPrintValue(values[i].ch, values[i].value);
         s_cache[s_cache_count].id    = id;
-        s_cache[s_cache_count].value = values[i].value * 100;  /* wire format is x100 */
+        s_cache[s_cache_count].value = values[i].value;   /* already x100, see dev_manager.h */
         s_cache_count++;
     }
     return s_cache_count;
@@ -121,7 +145,7 @@ static void Task_Sensor_Report(void)
         s_err_cnt++;
         printf("[ERR #%lu] sensor read failed\r\n", (unsigned long)s_err_cnt);
         fault.id    = LINK_ID_ERRCODE;           /* the fault goes on the same link */
-        fault.value = LINK_ERR_DHT11;
+        fault.value = LINK_ERR_SENSOR;
         (void)Link_SendReport(&fault, 1U);
         return;
     }
