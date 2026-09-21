@@ -31,7 +31,7 @@
   "clangd.arguments": [
     "--background-index",
     "--query-driver=**",
-    "--compile-commands-dir=d:\\Code\\ESP32\\BloomcareGateway\\build"
+    "--compile-commands-dir=d:\\Code\\IoT\\BloomcareGreenhouse\\firmware\\esp32s3\\build"
   ],
   "idf.portWin": "COM10",
   "idf.flashType": "UART"

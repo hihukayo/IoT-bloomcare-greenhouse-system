@@ -76,7 +76,7 @@ BloomcareGateway/
 ## 协议要点
 
 帧格式与命令码和节点侧完全一致，见
-`../BloomcareGreenhouse/README.md` 的「协议要点」一节。网关这一侧要额外注意：
+`../stm32/README.md` 的「协议要点」一节。网关这一侧要额外注意：
 
 - 网关发出的帧，`ADDR` 填目标节点地址（当前 `LINK_ADDR_STM32 = 0x01`）。
   地址字段留着是为了将来一个网关挂多个同型号节点。
