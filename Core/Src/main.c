@@ -21,10 +21,12 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "bsp_delay.h"
-#include "bsp_dht11.h"
-#include "bsp_link.h"
-#include "bsp_uart.h"
+#include "bsp_delay.h"     /* BSP    : TIM2 microsecond delay, USART1 console */
+#include "bsp_uart.h"      /* BSP    : USART2 link transport, DMA ring + IDLE */
+#include "dev_manager.h"   /* Device : sensor / actuator table                */
+#include "task_comm.h"     /* Tasks  : link protocol service                  */
+#include "task_sensor.h"   /* Tasks  : acquisition and reporting              */
+#include "task_control.h"  /* Tasks  : command execution                      */
 #include <stdio.h>
 /* USER CODE END Includes */
 
@@ -35,11 +37,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define APP_REPORT_MS        2000U   /* default report period, DHT11 wants >= 2s */
-#define APP_REPORT_MIN_MS    1000U   /* accepted range of the CONTROL command    */
-#define APP_REPORT_MAX_MS    60000U
-#define APP_STARTUP_MS       1000U   /* DHT11 needs ~1s to settle after power-up */
-#define APP_DUMP_MS          10000U  /* period of the debug counter dump         */
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -67,87 +65,17 @@ static void MX_USART1_UART_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_USART2_UART_Init(void);
 /* USER CODE BEGIN PFP */
-static uint8_t App_OnLinkCommand(uint8_t cmd, const uint8_t *payload, uint8_t len);
-static void App_ReportSensors(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-static uint32_t s_report_ms = APP_REPORT_MS;
-static uint32_t s_ok_cnt;
-static uint32_t s_err_cnt;
-
-/**
-  * @brief  Execute one command that arrived from the gateway.
-  * @param  cmd:     LINK_CMD_CONTROL.
-  * @param  payload: data items, ID(1B) + int32(4B, little endian) each.
-  * @param  len:     payload length in bytes.
-  * @retval LINK_OK when the command was executed, otherwise a LINK_NAK_xxx reason.
-  */
-static uint8_t App_OnLinkCommand(uint8_t cmd, const uint8_t *payload, uint8_t len)
-{
-  uint8_t id;
-  int32_t value;
-
-  if (cmd != LINK_CMD_CONTROL)
-  {
-    return LINK_NAK_UNSUPPORTED;
-  }
-  if (len < LINK_ITEM_LEN)
-  {
-    return LINK_NAK_BAD_PARAM;
-  }
-  id = payload[0];
-  value = (int32_t)((uint32_t)payload[1] | ((uint32_t)payload[2] << 8) |
-                    ((uint32_t)payload[3] << 16) | ((uint32_t)payload[4] << 24));
-
-  switch (id)
-  {
-    case LINK_ID_REPORT_MS:                  /* system item: reporting period */
-      if ((value < (int32_t)APP_REPORT_MIN_MS) || (value > (int32_t)APP_REPORT_MAX_MS))
-      {
-        return LINK_NAK_BAD_PARAM;
-      }
-      s_report_ms = (uint32_t)value;
-      printf("[CMD ] report period = %lu ms\r\n", (unsigned long)s_report_ms);
-      return LINK_OK;
-
-    default:                                 /* no actuator is wired yet */
-      return LINK_NAK_UNSUPPORTED;
-  }
-}
-
-/**
-  * @brief  Read the DHT11 and report both values to the gateway.
-  */
-static void App_ReportSensors(void)
-{
-  uint8_t temp = 0;
-  uint8_t humi = 0;
-  Link_Item_t items[2];
-  uint8_t ret;
-
-  if (DHT11_Read(&temp, &humi) == 0)
-  {
-    s_ok_cnt++;
-    printf("[OK  #%lu] Temp = %u C, Humi = %u %%RH\r\n",
-           (unsigned long)s_ok_cnt, (unsigned)temp, (unsigned)humi);
-    items[0].id    = LINK_ID_TEMP;           /* values are scaled by 100 */
-    items[0].value = (int32_t)temp * 100;
-    items[1].id    = LINK_ID_HUMI;
-    items[1].value = (int32_t)humi * 100;
-    ret = Link_SendReport(items, 2);
-    printf("[LINK] report %s\r\n", (ret == LINK_RET_OK) ? "sent" : "FAILED");
-  }
-  else
-  {
-    s_err_cnt++;
-    printf("[ERR #%lu] DHT11 read failed\r\n", (unsigned long)s_err_cnt);
-    items[0].id    = LINK_ID_ERRCODE;        /* the fault goes on the same link */
-    items[0].value = LINK_ERR_DHT11;
-    (void)Link_SendReport(items, 1);
-  }
-}
+/* ------------------------------------------------------------------
+   The application logic lives in the Tasks/ layer now:
+     Tasks/task_comm.c    - link protocol service and debug counters
+     Tasks/task_sensor.c  - sensor acquisition and reporting
+     Tasks/task_control.c - command execution on the actuators
+   main.c stays the thin CubeMX shell: start the layers, then poll them.
+   ------------------------------------------------------------------ */
 /* USER CODE END 0 */
 
 /**
@@ -184,52 +112,27 @@ int main(void)
   MX_TIM2_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
-  DHT11_Init();                      /* open-drain + pull-up, survives CubeMX regen */
-  bsp_delay_init();                 /* start TIM2 as free-running 1us counter */
-  bsp_uart_init();
-  Link_Init();                      /* DMA ring + IDLE interrupt on USART2 */
-  Link_SetCmdHandler(App_OnLinkCommand);
+  /* Start the layers bottom up: board -> devices -> tasks. */
+  BSP_Delay_Init();                  /* TIM2 as free running 1us counter     */
+  BSP_Uart_Init();                   /* USART1 console, printf goes here     */
+  (void)Dev_Manager_Init();          /* open every device of the table       */
+  Dev_Manager_List();                /* print what got registered            */
+  Task_Sensor_Init();                /* acquisition timers                   */
+  Task_Control_Init();               /* CONTROL command handling             */
+  Task_Comm_Init();                  /* protocol, USART2 DMA ring + IDLE     */
   printf("[BOOT] USART1 115200 8N1 ready\r\n");
-  /* USER CODE END 2 */
+/* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   uint32_t now;
-  uint32_t boot_tick;
-  uint32_t report_tick;
-#ifdef LINK_DEBUG
-  uint32_t dump_tick;
-#endif
-
-  now = HAL_GetTick();
-  boot_tick = now;
-  report_tick = now;
-#ifdef LINK_DEBUG
-  dump_tick = now;
-#endif
 
   while (1)
   {
     now = HAL_GetTick();
 
-    Link_Poll();                    /* parse RX, answer commands, resent TX   */
-
-    if ((uint32_t)(now - boot_tick) >= APP_STARTUP_MS)      /* DHT11 settles */
-    {
-        if ((uint32_t)(now - report_tick) >= s_report_ms)
-        {
-            report_tick = now;
-            App_ReportSensors();
-        }
-    }
-#ifdef LINK_DEBUG
-    if ((uint32_t)(now - dump_tick) >= APP_DUMP_MS)
-    {
-        dump_tick = now;
-        Link_DumpStats();
-    }
-#endif
-
+    Task_Comm_Poll(now);           /* parse RX, answer CONTROL, resend TX    */
+    Task_Sensor_Poll(now);         /* sample the devices and report them     */
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */

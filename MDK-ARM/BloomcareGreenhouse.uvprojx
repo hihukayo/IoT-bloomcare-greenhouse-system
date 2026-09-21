@@ -138,7 +138,7 @@
           </Flash1>
           <bUseTDR>1</bUseTDR>
           <Flash2>BIN\UL2V8M.DLL</Flash2>
-          <Flash3></Flash3>
+          <Flash3>"" ()</Flash3>
           <Flash4></Flash4>
           <pFcarmOut></pFcarmOut>
           <pFcarmGrp></pFcarmGrp>
@@ -340,7 +340,7 @@
               <MiscControls></MiscControls>
               <Define>USE_HAL_DRIVER,STM32F103xE</Define>
               <Undefine></Undefine>
-              <IncludePath>../Core/Inc;../Drivers/STM32F1xx_HAL_Driver/Inc;../Drivers/STM32F1xx_HAL_Driver/Inc/Legacy;../Drivers/CMSIS/Device/ST/STM32F1xx/Include;../Drivers/CMSIS/Include;../BSP/Inc</IncludePath>
+              <IncludePath>../Core/Inc;../Drivers/STM32F1xx_HAL_Driver/Inc;../Drivers/STM32F1xx_HAL_Driver/Inc/Legacy;../Drivers/CMSIS/Device/ST/STM32F1xx/Include;../Drivers/CMSIS/Include;../BSP/Inc;../Components/Inc;../Device/Inc;../Device/Sensors/Inc;../Device/Actuators/Inc;../Tasks/Inc</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -607,19 +607,65 @@
               <FilePath>..\BSP\Src\bsp_delay.c</FilePath>
             </File>
             <File>
-              <FileName>bsp_dht11.c</FileName>
+              <FileName>bsp_gpio.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\BSP\Src\bsp_dht11.c</FilePath>
+              <FilePath>..\BSP\Src\bsp_gpio.c</FilePath>
             </File>
             <File>
               <FileName>bsp_uart.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\BSP\Src\bsp_uart.c</FilePath>
             </File>
+
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>Components</GroupName>
+          <Files>
             <File>
-              <FileName>bsp_link.c</FileName>
+              <FileName>comp_link.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\BSP\Src\bsp_link.c</FilePath>
+              <FilePath>..\Components\Src\comp_link.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>Device</GroupName>
+          <Files>
+            <File>
+              <FileName>dev_manager.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Device\Src\dev_manager.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>Device/Sensors</GroupName>
+          <Files>
+            <File>
+              <FileName>sen_dht11.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Device\Sensors\Src\sen_dht11.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>Tasks</GroupName>
+          <Files>
+            <File>
+              <FileName>task_comm.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Tasks\Src\task_comm.c</FilePath>
+            </File>
+            <File>
+              <FileName>task_sensor.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Tasks\Src\task_sensor.c</FilePath>
+            </File>
+            <File>
+              <FileName>task_control.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Tasks\Src\task_control.c</FilePath>
             </File>
           </Files>
         </Group>
