@@ -1,26 +1,38 @@
+/**
+  ******************************************************************************
+  * @file    link_protocol.h
+  * @brief   Protocol layer: frame format and (de)serialisation of the
+  *          STM32F103 node <-> ESP32-S3 gateway link.
+  * @note    Pure software: no register, no pin and no driver, so this component
+  *          is portable and stays the mirror image of the node side protocol.
+  ******************************************************************************
+  */
 #ifndef __LINK_PROTOCOL_H
 #define __LINK_PROTOCOL_H
 
-#include <stdint.h>
+#include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 /* ------------------------------------------------------------------
- * STM32F103 <-> ESP32-S3 link, frame format (little endian):
+ * Frame format (little endian):
  *
  *   AA 55 | VER | ADDR | LEN | CMD | SEQ | PAYLOAD(LEN) | CRC_L CRC_H
- *     0 1     2     3     4     5     6         7 ...
+ *     0 1     2      3     4     5     6         7 ...
  *
  *   VER     : protocol version, currently 0x01
  *   ADDR    : node this frame belongs to, see LINK_ADDR_xxx
  *   LEN     : payload length in bytes, 0 ~ 250
  *   CMD     : command code, see LINK_CMD_xxx
- *   SEQ     : sequence number, an ACK or NAK echoes the SEQ it answers
+ *   SEQ     : sequence number, an ACK / NAK / QUERY answer echoes it
  *   PAYLOAD : data items, each 5 bytes = ID(1B) + int32(4B)
  *   CRC16   : MODBUS, over VER .. end of PAYLOAD, low byte first
  *
  * Handshake rules:
  *   - REPORT / HEARTBEAT are fire and forget, they are never acknowledged.
  *   - CONTROL must be answered with ACK or NAK carrying the same SEQ.
+ *   - QUERY is answered with a REPORT carrying the same SEQ, so this side can
+ *     pair request and answer, and with a NAK when the node has no such value.
  * ------------------------------------------------------------------ */
 #define LINK_SOF0           0xAA
 #define LINK_SOF1           0x55
@@ -81,6 +93,8 @@ typedef struct
  */
 typedef void (*link_frame_cb_t)(const uint8_t *frame, void *user);
 
+/* ---------------- receiving side ---------------- */
+
 /**
  * @brief  CRC16/MODBUS checksum.
  * @param  data: input buffer.
@@ -113,5 +127,39 @@ void link_parser_init(link_parser_t *p);
  */
 void link_parser_feed(link_parser_t *p, const uint8_t *data, size_t n,
                       link_frame_cb_t cb, void *user);
+
+/* ---------------- sending side ---------------- */
+
+/**
+ * @brief  Build one frame (header, payload, CRC) into a caller buffer.
+ * @param  out:     buffer that receives the frame.
+ * @param  cap:     capacity of that buffer, at least LINK_HDR_LEN + len + LINK_CRC_LEN.
+ * @param  addr:    address field, see LINK_ADDR_xxx.
+ * @param  cmd:     command code, see LINK_CMD_xxx.
+ * @param  seq:     sequence number to put into the frame.
+ * @param  payload: payload bytes, may be NULL when len is 0.
+ * @param  len:     payload length in bytes, at most LINK_MAX_PAYLOAD.
+ * @retval total frame length in bytes, 0 when the arguments do not fit.
+ */
+size_t link_frame_build(uint8_t *out, size_t cap, uint8_t addr, uint8_t cmd,
+                        uint8_t seq, const uint8_t *payload, uint8_t len);
+
+/**
+ * @brief  Append one data item (ID plus int32 value) to a payload buffer.
+ * @param  payload: payload buffer, at least cap bytes.
+ * @param  cap:     capacity of that buffer.
+ * @param  len:     current payload length, updated when the item was added.
+ * @param  id:      item ID, see LINK_ID_xxx.
+ * @param  value:   item value, scaled by 100 like the reported values.
+ * @retval true when the item was appended, false when the buffer is too small.
+ */
+bool link_item_put(uint8_t *payload, uint8_t cap, uint8_t *len, uint8_t id, int32_t value);
+
+/**
+ * @brief  Number of whole items inside a payload.
+ * @param  len: payload length in bytes.
+ * @retval number of items.
+ */
+uint8_t link_item_count(uint8_t len);
 
 #endif /* __LINK_PROTOCOL_H */
