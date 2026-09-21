@@ -1,0 +1,33 @@
+# Keil MDK-ARM build output (regenerated on every build)
+MDK-ARM/BloomcareGreenhouse/
+MDK-ARM/Objects/
+MDK-ARM/Listings/
+MDK-ARM/DebugConfig/
+MDK-ARM/RTE/
+MDK-ARM/*.lst
+MDK-ARM/*.map
+MDK-ARM/*.lnp
+MDK-ARM/*.sct
+MDK-ARM/*.htm
+MDK-ARM/*.axf
+MDK-ARM/*.hex
+MDK-ARM/*.bin
+MDK-ARM/*.dep
+MDK-ARM/*.crf
+MDK-ARM/*.o
+MDK-ARM/*.d
+
+# Keil per-user settings and backups
+*.uvguix.*
+*.bak
+*.scvd
+MDK-ARM/*.uvoptx.bak
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# Unused CMSIS bloat bundled by CubeMX, not referenced by the Keil project
+Drivers/CMSIS/DSP/
+Drivers/CMSIS/Lib/
+Drivers/CMSIS/NN/
