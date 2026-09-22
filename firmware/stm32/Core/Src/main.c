@@ -24,6 +24,7 @@
 #include "bsp_delay.h"     /* BSP    : TIM2 microsecond delay, USART1 console */
 #include "bsp_uart.h"      /* BSP    : USART2 link transport, DMA ring + IDLE */
 #include "dev_manager.h"   /* Device : sensor / actuator table                */
+#include "act_beep.h"      /* Device : buzzer cue on the actuator pin         */
 #include "task_comm.h"     /* Tasks  : link protocol service                  */
 #include "task_sensor.h"   /* Tasks  : acquisition and reporting              */
 #include "task_control.h"  /* Tasks  : command execution                      */
@@ -37,7 +38,10 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+/* Start-up cue on the buzzer: two short beeps once every layer is up. */
+#define BOOT_BEEP_TIMES     2U
+#define BOOT_BEEP_ON_MS     80U
+#define BOOT_BEEP_GAP_MS    80U
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -112,16 +116,26 @@ int main(void)
   MX_TIM2_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
+  uint8_t dev_failed;
+
   /* Start the layers bottom up: board -> devices -> tasks. */
   BSP_Delay_Init();                  /* TIM2 as free running 1us counter     */
   BSP_Uart_Init();                   /* USART1 console, printf goes here     */
-  (void)Dev_Manager_Init();          /* open every device of the table       */
+  dev_failed = Dev_Manager_Init();   /* open every device of the table       */
   Dev_Manager_List();                /* print what got registered            */
   Task_Sensor_Init();                /* acquisition timers                   */
   Task_Control_Init();               /* CONTROL command handling             */
   Task_Comm_Init();                  /* protocol, USART2 DMA ring + IDLE     */
   printf("[BOOT] USART1 115200 8N1 ready\r\n");
-/* USER CODE END 2 */
+
+  /* Every layer came up, so two short beeps are the audible ready cue. A
+     device that failed to open keeps it silent instead, the log above
+     names the one that failed. */
+  if (dev_failed == 0U)
+  {
+    Act_Beep_Pattern(BOOT_BEEP_TIMES, BOOT_BEEP_ON_MS, BOOT_BEEP_GAP_MS);
+  }
+  /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
@@ -324,9 +338,13 @@ static void MX_GPIO_Init(void)
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOG_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(DHT22_GPIO_Port, DHT22_Pin, GPIO_PIN_SET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(BEEP_GPIO_Port, BEEP_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : DHT22_Pin */
   GPIO_InitStruct.Pin = DHT22_Pin;
@@ -334,6 +352,13 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(DHT22_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : BEEP_Pin */
+  GPIO_InitStruct.Pin = BEEP_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(BEEP_GPIO_Port, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 

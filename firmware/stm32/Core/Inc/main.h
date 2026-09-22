@@ -59,6 +59,8 @@ void Error_Handler(void);
 /* Private defines -----------------------------------------------------------*/
 #define DHT22_Pin GPIO_PIN_11
 #define DHT22_GPIO_Port GPIOG
+#define BEEP_Pin GPIO_PIN_8
+#define BEEP_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 

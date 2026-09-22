@@ -34,6 +34,10 @@
 #define DEV_CH_SOIL     0x03U
 #define DEV_CH_LIGHT    0x04U
 
+/* Actuator channels start at 0x10, so one id can never name a sensor and an
+   actuator at the same time. */
+#define DEV_CH_BEEP     0x10U
+
 /** One value produced by a sensor, in the unit of that sensor. */
 typedef struct
 {

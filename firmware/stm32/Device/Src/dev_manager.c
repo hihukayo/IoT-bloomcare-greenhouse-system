@@ -8,6 +8,7 @@
   */
 #include "dev_manager.h"
 #include "sen_dht22.h"
+#include "act_beep.h"
 #include <stdio.h>
 
 /* ------------------------------------------------------------------
@@ -26,7 +27,7 @@ static const Dev_Sensor_t *const s_sensors[] =
 
 static const Dev_Actuator_t *const s_actuators[] =
 {
-    NULL,   /* no actuator wired yet: put &g_act_pump / &g_act_led here */
+    &g_act_beep,
 };
 
 #define SENSOR_SLOTS      ((uint8_t)(sizeof(s_sensors) / sizeof(s_sensors[0])))

@@ -22,8 +22,14 @@
  */
 static uint8_t ItemToChannel(uint8_t id)
 {
-    (void)id;
-    return 0U;                        /* no actuator wired yet */
+    switch (id)
+    {
+        case LINK_ID_BEEP:
+            return DEV_CH_BEEP;
+        default:
+            return 0U;                /* channel 0 is unused, so this
+                                         never matches a driver     */
+    }
 }
 
 /**

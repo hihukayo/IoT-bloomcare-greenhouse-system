@@ -89,6 +89,7 @@
 /* Item IDs: 0x01~0x7F sensors, 0x80~0xEF actuators, 0xF0~0xFF system. */
 #define LINK_ID_TEMP            0x01U
 #define LINK_ID_HUMI            0x02U
+#define LINK_ID_BEEP            0x80U   /* CONTROL: 0 = silent, else sounding */
 #define LINK_ID_REPORT_MS       0xF1U   /* CONTROL: report period in ms       */
 #define LINK_ID_ERRCODE         0xF2U
 

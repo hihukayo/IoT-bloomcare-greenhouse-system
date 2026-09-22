@@ -649,6 +649,16 @@
           </Files>
         </Group>
         <Group>
+          <GroupName>Device/Actuators</GroupName>
+          <Files>
+            <File>
+              <FileName>act_beep.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Device\Actuators\Src\act_beep.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
           <GroupName>Tasks</GroupName>
           <Files>
             <File>
