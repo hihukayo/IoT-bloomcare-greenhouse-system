@@ -1,3 +1,14 @@
+/**
+  ******************************************************************************
+  * @file    app_debug.h
+  * @brief   The single switch that turns every log line of the gateway on or off.
+  * @note    Defining APP_DEBUG maps LOGI / LOGW / LOGE onto ESP_LOGx, leaving it
+  *          undefined removes the three macros and with them every format string, so a
+  *          release image carries no log text at all. The block below shows how a .c
+  *          file asks for the macros and why the switch has to be commented out rather
+  *          than set to 0. LINK_DEBUG plays the same role on the STM32F103 side.
+  ******************************************************************************
+  */
 #ifndef __APP_DEBUG_H
 #define __APP_DEBUG_H
 

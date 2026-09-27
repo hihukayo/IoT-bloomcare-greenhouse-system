@@ -1,0 +1,27 @@
+# Defaults of the Bloomcare gateway.
+#
+# The only thing this project changes compared to a stock ESP-IDF configuration
+# is what the local display needs. Everything else is left at the default of
+# ESP-IDF on purpose, so the file stays short and readable.
+
+# ---- LVGL, the graphics library of the local interface ----------------------
+#
+# The panel driver is not configured here: esp_lcd ships the ST7789 driver with
+# ESP-IDF itself, see components/device/src/dev_lcd.c.
+#
+# Fonts. Montserrat 14 is the built in default of LVGL and carries the body text
+# of the lists. 12 is used for the hints and the state badge, 16 for the titles
+# of the two screens and 20 for the two large readouts of the dashboard.
+CONFIG_LV_FONT_MONTSERRAT_12=y
+CONFIG_LV_FONT_MONTSERRAT_16=y
+CONFIG_LV_FONT_MONTSERRAT_20=y
+
+# The two draw buffers of the display task live in internal RAM and are handed
+# to the SPI driver, so dynamic memory of LVGL only holds the widgets. The pool
+# below is the default of LVGL, spelled out so a fresh clone cannot drift.
+CONFIG_LV_MEM_SIZE=65536
+
+# Colour depth of a RGB565 panel, and the refresh period LVGL itself works on.
+# The display task redraws on its own schedule, this one only drives the timers.
+CONFIG_LV_COLOR_DEPTH=16
+CONFIG_LV_DEF_REFR_PERIOD=33

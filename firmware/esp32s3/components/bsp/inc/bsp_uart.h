@@ -1,3 +1,13 @@
+/**
+  ******************************************************************************
+  * @file    bsp_uart.h
+  * @brief   Board layer: the UART that carries the link to the STM32F103 node.
+  * @note    USART1 of the node is a plain TTL pair, so this is an ordinary 115200 8N1
+  *          line with no flow control. The layer only moves bytes in and out of the
+  *          hardware, what those bytes mean is decided one layer up, in
+  *          components/protocol/link_protocol.h.
+  ******************************************************************************
+  */
 #ifndef __BSP_UART_H
 #define __BSP_UART_H
 

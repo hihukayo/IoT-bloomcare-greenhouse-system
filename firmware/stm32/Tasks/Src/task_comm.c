@@ -20,21 +20,38 @@
  * Glue between the protocol layer and the board: comp_link only knows
  * these four function pointers, so it never sees a HAL handle.
  * ------------------------------------------------------------------ */
+/** @brief  Open USART2 for the link: DMA ring buffer plus IDLE detection. */
 static void     LinkPort_RxStart(void)
 {
     BSP_Uart2_Init();                          /* arm the DMA ring + IDLE */
 }
 
+/**
+ * @brief  Move the bytes the DMA ring collected into the caller buffer.
+ * @param  dst: destination buffer.
+ * @param  max: capacity of dst in bytes.
+ * @retval number of bytes copied, 0 when nothing is pending.
+ */
 static uint16_t LinkPort_RxTake(uint8_t *dst, uint16_t max)
 {
     return BSP_Uart2_RxTake(dst, max);
 }
 
+/**
+ * @brief  Tell whether the line went quiet, which ends one received frame.
+ * @retval 1 when an IDLE event is pending, 0 otherwise.
+ */
 static uint8_t  LinkPort_IdleTake(void)
 {
     return BSP_Uart2_IdleTake();
 }
 
+/**
+ * @brief  Send one finished frame, blocks until the UART is done.
+ * @param  data: frame bytes, header and CRC included.
+ * @param  len:  number of bytes to send.
+ * @retval 0 on success, 1 on failure.
+ */
 static uint8_t  LinkPort_Tx(const uint8_t *data, uint16_t len)
 {
     return BSP_Uart2_Tx(data, len);

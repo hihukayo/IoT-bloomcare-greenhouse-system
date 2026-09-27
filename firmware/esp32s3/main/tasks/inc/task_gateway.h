@@ -53,4 +53,13 @@ esp_err_t Task_Gateway_SetReportPeriod(uint32_t ms);
  */
 esp_err_t Task_Gateway_RequestValues(uint8_t id, dev_item_t *out, uint8_t max, uint8_t *got);
 
+/**
+ * @brief  Switch the buzzer of the node on or off.
+ * @note   A CONTROL frame, so the node answers with an ACK and this call returns
+ *         once that answer arrived or the resends ran out.
+ * @param  on: 1 sounds the buzzer, 0 keeps it quiet.
+ * @retval ESP_OK on success, see dev_stm32_send_control() otherwise.
+ */
+esp_err_t Task_Gateway_SetBuzzer(uint8_t on);
+
 #endif /* __TASK_GATEWAY_H */

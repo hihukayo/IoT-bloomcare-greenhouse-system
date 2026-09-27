@@ -6,6 +6,7 @@
   *            tasks/task_comm.c    - link to the STM32 node and its counters
   *            tasks/task_sensor.c  - the values the node reports plus its state
   *            tasks/task_gateway.c - CONTROL and QUERY, the outward face
+  *            tasks/task_display.c - the panel and the knob, the local interface
   *          main.c stays the thin shell: start the layers, then poll them.
   ******************************************************************************
   */
@@ -15,6 +16,7 @@
 #include "task_comm.h"
 #include "task_sensor.h"
 #include "task_gateway.h"
+#include "task_display.h"
 
 #define APP_LOOP_DELAY_MS   10U
 
@@ -36,9 +38,9 @@ static uint32_t App_Millis(void)
 /**
  * @brief  Application entry point of the Bloomcare gateway.
  *
- *         For now the gateway relays the STM32F103 sensor node. The OLED
- *         display and the phone application link will be added as further
- *         tasks of the same loop.
+ *         The gateway relays the STM32F103 sensor node and runs the local
+ *         interface on its own panel. The phone application link will be
+ *         added as one more task of the same loop.
  */
 void app_main(void)
 {
@@ -48,6 +50,7 @@ void app_main(void)
     Task_Comm_Init();                     /* UART plus frame parser          */
     Task_Sensor_Init();                   /* subscribe to the values         */
     Task_Gateway_Init();                  /* outward actions                 */
+    Task_Display_Init();                  /* panel, LVGL and the knob        */
     while (1)
     {
         now = App_Millis();
@@ -55,6 +58,7 @@ void app_main(void)
         Task_Comm_Poll(now);              /* read the link, log the frames   */
         Task_Sensor_Poll(now);            /* online state of the node        */
         Task_Gateway_Poll(now);           /* pending CONTROL and QUERY work  */
+        Task_Display_Poll(now);           /* what the interface asked for    */
 
         vTaskDelay(pdMS_TO_TICKS(APP_LOOP_DELAY_MS));
     }

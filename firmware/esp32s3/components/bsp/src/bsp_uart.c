@@ -1,3 +1,12 @@
+/**
+  ******************************************************************************
+  * @file    bsp_uart.c
+  * @brief   Implementation of the link UART board support.
+  * @note    A thin wrapper over the ESP-IDF UART driver: the RX ring owned by the
+  *          driver is the only buffer of this layer, so the protocol layer above keeps
+  *          every timeout and framing decision.
+  ******************************************************************************
+  */
 #include "bsp_uart.h"
 #include "freertos/FreeRTOS.h"
 #include "app_debug.h"

@@ -93,3 +93,13 @@ esp_err_t Task_Gateway_RequestValues(uint8_t id, dev_item_t *out, uint8_t max, u
 {
     return dev_stm32_send_query(id, out, max, got);
 }
+
+/**
+ * @brief  Switch the buzzer of the node on or off.
+ * @param  on: 1 sounds the buzzer, 0 keeps it quiet.
+ * @retval see task_gateway.h.
+ */
+esp_err_t Task_Gateway_SetBuzzer(uint8_t on)
+{
+    return dev_stm32_send_control(LINK_ID_BEEP, (on != 0U) ? 1 : 0);
+}

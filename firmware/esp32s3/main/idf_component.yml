@@ -1,0 +1,14 @@
+## Managed dependencies of the gateway.
+##
+## The display stack is split the usual way:
+##   lvgl/lvgl               - the graphics library itself
+##   espressif/esp_lvgl_port - the glue to ESP-IDF: tick, LVGL task,
+##                             display registration and the thread lock
+##
+## The ST7789 panel driver is deliberately NOT listed here: ESP-IDF 6.1
+## already ships esp_lcd_panel_st7789 inside the built-in esp_lcd
+## component, so nothing has to be downloaded for it.
+dependencies:
+  idf: ">=6.0"
+  lvgl/lvgl: "^9"
+  espressif/esp_lvgl_port: "^2"
