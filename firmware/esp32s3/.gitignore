@@ -78,3 +78,7 @@ Desktop.ini
 *.workspace # General workspace files, can be from various tools
 *.suo       # Visual Studio Solution User Options
 *.sln.docstates # Visual Studio
+
+# Local bench credentials: a WiFi password never belongs in the repository.
+# Copy main/wifi/wifi_secrets.example.h to main/wifi/wifi_secrets.h and fill it in.
+main/wifi/wifi_secrets.h

@@ -815,6 +815,28 @@ static const char *Display_WifiText(void)
     }
 }
 
+/**
+ * @brief  Colour of the dot in the status bar.
+ * @note   That dot belongs to the word next to it: it reports whether the
+ *         gateway is on the air, not how the readings are doing. The health of
+ *         the readings still shows on the cards, each with a dot of its own.
+ * @retval the colour of the link.
+ */
+static lv_color_t Display_NetColor(void)
+{
+    switch (s_net_state)
+    {
+        case TASK_DISPLAY_NET_CONNECTING:
+            return UI_COL_WARN;
+        case TASK_DISPLAY_NET_OK:
+            return UI_COL_OK;
+        case TASK_DISPLAY_NET_ERR:
+            return UI_COL_ALARM;
+        default:
+            return UI_COL_IDLE;
+    }
+}
+
 /* ------------------------------------------------------------------
  * The status bar, the same one on all three screens.
  * ------------------------------------------------------------------ */
@@ -872,7 +894,7 @@ static void Display_BuildBar(uint8_t screen)
 static void Display_UpdateBar(uint8_t screen)
 {
     Display_SetText(s_bar[screen].wifi, Display_WifiText());
-    lv_obj_set_style_bg_color(s_bar[screen].dot, Display_LevelColor(s_worst_level), 0);
+    lv_obj_set_style_bg_color(s_bar[screen].dot, Display_NetColor(), 0);
 }
 /* ------------------------------------------------------------------
  * Building blocks of the three screens.
