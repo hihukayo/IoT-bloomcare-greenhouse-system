@@ -37,9 +37,9 @@ static uint8_t ChannelToItem(uint8_t ch)
 {
     switch (ch)
     {
-    case DEV_CH_TEMP:  return LINK_ID_TEMP;
-    case DEV_CH_HUMI:  return LINK_ID_HUMI;
-    default:           return 0U;
+        case DEV_CH_TEMP:  return LINK_ID_TEMP;
+        case DEV_CH_HUMI:  return LINK_ID_HUMI;
+        default:           return 0U;
     }
 }
 
@@ -50,11 +50,11 @@ static const char *ChannelName(uint8_t ch)
 {
     switch (ch)
     {
-    case DEV_CH_TEMP:  return "Temp";
-    case DEV_CH_HUMI:  return "Humi";
-    case DEV_CH_SOIL:  return "Soil";
-    case DEV_CH_LIGHT: return "Light";
-    default:           return "?";
+        case DEV_CH_TEMP:  return "Temp";
+        case DEV_CH_HUMI:  return "Humi";
+        case DEV_CH_SOIL:  return "Soil";
+        case DEV_CH_LIGHT: return "Light";
+        default:           return "?";
     }
 }
 
@@ -65,9 +65,9 @@ static const char *ChannelUnit(uint8_t ch)
 {
     switch (ch)
     {
-    case DEV_CH_TEMP:  return "C";
-    case DEV_CH_HUMI:  return "%RH";
-    default:           return "";
+        case DEV_CH_TEMP:  return "C";
+        case DEV_CH_HUMI:  return "%RH";
+        default:           return "";
     }
 }
 
@@ -127,6 +127,7 @@ static uint8_t Task_Sensor_Sample(void)
         s_cache[s_cache_count].value = values[i].value;   /* already x100, see dev_manager.h */
         s_cache_count++;
     }
+		
     return s_cache_count;
 }
 
@@ -149,6 +150,7 @@ static void Task_Sensor_Report(void)
         (void)Link_SendReport(&fault, 1U);
         return;
     }
+		
     ret = Link_SendReport(s_cache, n);
     printf("[LINK] report %s\r\n", (ret == LINK_RET_OK) ? "sent" : "FAILED");
 }
@@ -204,6 +206,7 @@ void Task_Sensor_Poll(uint32_t now_ms)
         Task_Sensor_Report();
     }
 }
+
 /**
  * @brief  Answer a QUERY of the gateway from the cache.
  * @param  id:  item id asked for, 0 means every item the node has.
@@ -237,5 +240,6 @@ uint8_t Task_Sensor_OnQuery(uint8_t id, Link_Item_t *out, uint8_t max)
         out[n] = s_cache[i];
         n++;
     }
+		
     return n;
 }

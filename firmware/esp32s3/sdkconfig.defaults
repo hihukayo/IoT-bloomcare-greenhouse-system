@@ -1,8 +1,39 @@
 # Defaults of the Bloomcare gateway.
 #
-# The only thing this project changes compared to a stock ESP-IDF configuration
-# is what the local display needs. Everything else is left at the default of
-# ESP-IDF on purpose, so the file stays short and readable.
+# A fresh clone builds for this module and this panel without anyone having to
+# open menuconfig. What comes first are the facts of the board, the flash and the
+# PSRAM it is soldered with; what comes after is what the local interface needs.
+# Everything else is left at the default of ESP-IDF on purpose, so the file stays
+# short and readable.
+
+# ---- The board: 16 MB of flash, 8 MB of octal PSRAM -------------------------
+#
+# The flash size is not a preference, it is what the module carries. Without it
+# here the build would assume 2 MB and the partition table could not reach the
+# upper half of the chip.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+# malloc() may use the PSRAM, so the widgets, the futures TLS buffers and the
+# logs of the gateway do not have to fit in the 512 KB of internal RAM. 80 MHz is
+# what an octal chip is made for; the menuconfig default of 40 MHz would halve
+# the bandwidth for nothing. The speed of the chip is not a preference either.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_TYPE_AUTO=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_USE_MALLOC=y
+
+# The memory test writes and reads the whole chip on every boot, which costs a
+# noticeable part of the boot time for a fault that the chip does not develop on
+# its own. Turn it back on if a module is ever suspected of bad PSRAM: a module
+# with no PSRAM at all stops the boot regardless, that is a different check.
+# CONFIG_SPIRAM_MEMTEST is not set
+
+# The flash is laid out in partitions.csv: 4 MB for the application and the rest
+# of the 16 MB for a littlefs volume. The stock single app table would hand the
+# application 1 MB, two thirds of which the current image already spends.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
 # ---- LVGL, the graphics library of the local interface ----------------------
 #

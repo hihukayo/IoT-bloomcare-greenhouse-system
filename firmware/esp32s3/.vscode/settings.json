@@ -33,6 +33,6 @@
     "--query-driver=**",
     "--compile-commands-dir=d:\\Code\\IoT\\BloomcareGreenhouse\\firmware\\esp32s3\\build"
   ],
-  "idf.portWin": "COM10",
-  "idf.flashType": "UART"
+  "idf.flashType": "UART",
+  "idf.port": "COM9"
 }

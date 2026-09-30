@@ -1,20 +1,32 @@
 /**
   ******************************************************************************
   * @file    task_display.c
-  * @brief   Implementation of the local display task.
-  * @note    Two screens, one knob. The turning is handed to LVGL as it is and
-  *          moves the focus inside a group. The switch is not: a hold has to be
-  *          told apart from a click first, so the device layer latches which of
-  *          the two it was and the tick of this file injects the matching
-  *          event. That keeps the click and the hold from ever firing together.
-  * @note    Nothing here touches the node directly. A transaction is asked for
-  *          by setting a request flag, and is run by Task_Display_Poll().
+  * @brief   Implementation of the local display task: the local interface of the
+  *          gateway, a 240x320 ST7789 panel driven by the rotary knob.
+ * @note    Four screens share one status bar and one knob:
+ *            main     the six cards of the environment monitor
+ *            detail   one reading, its extremes and its two thresholds
+ *            settings what the knob can change, plus the entry to the counters
+  *            link     the counters of the device layer, read only
+  * @note    The grid is placed on explicit pixels instead of being left to a
+  *          flex layout: the panel is a fixed 240x320, so every card sits on the
+  *          pixel it belongs to and the layout is symmetric by construction
+  *          rather than by luck. See the arithmetic above UI_STATUS_H.
+  * @note    Nothing here touches the node directly. A transaction is asked for by
+  *          setting a request flag and is run by Task_Display_Poll(), so a
+  *          transaction that blocks for up to a second can never stall the LVGL
+  *          task and freeze the interface.
+  * @note    The degree sign of the temperature unit is written as the UTF-8
+  *          escape "\xC2\xB0" so this file stays pure ASCII; the glyph itself is
+  *          part of the built in Montserrat fonts, whose second cmap starts at
+  *          U+00B0, see lv_font_montserrat_20.c.
   ******************************************************************************
   */
 #include "task_display.h"
 
 #include <stddef.h>
 #include <string.h>
+#include <time.h>
 
 #include "app_debug.h"
 #include "dev_encoder.h"
@@ -32,115 +44,336 @@ static const char *TAG = "TASK_DISPLAY";    /* only used by the LOGx macros */
 #endif
 
 /* ------------------------------------------------------------------
- * Sizes and timings.
+ * Task sizing and timings.
  * ------------------------------------------------------------------ */
 
 /* The LVGL task sits below the link tasks on purpose: the interface may lag,
    the protocol may not. */
-#define DISPLAY_TASK_PRIORITY       3
-#define DISPLAY_TASK_STACK          6144
-#define DISPLAY_TASK_SLEEP_MS       100
-#define DISPLAY_TICK_MS             5
+#define UI_TASK_PRIORITY        3
+#define UI_TASK_STACK           6144
+#define UI_TASK_SLEEP_MS        100
+#define UI_TASK_TICK_MS         5
 
-/* Two draw buffers of one band each, internal RAM and DMA capable. One tenth
-   of the panel is the sweet spot on a SPI panel: low memory, few transactions. */
-#define DISPLAY_BUF_LINES           32U
+/* Two draw buffers of one band each, internal RAM and DMA capable. One tenth of
+   the panel is the sweet spot on a SPI panel: low memory, few transactions. */
+#define UI_BUF_LINES            32U
 
-/* The values only move when the node reports, so a slow refresh costs nothing
-   and keeps the panel bus quiet. */
-#define DISPLAY_REFRESH_MS          200U
+/* The values only move when the node reports, so a slow refresh costs nothing.
+   The tick runs four times faster so a click feels immediate. */
+#define UI_REFRESH_MS           200U
+#define UI_TICK_PERIOD_MS       25U
 
-/* Housekeeping of the interface, fast enough for a click to feel immediate. */
-#define DISPLAY_TICK_PERIOD_MS      25U
+/* How long a message from the settings screen owns the title slot. */
+#define UI_STATUS_MS            3000U
 
-/* How long an answer of the node stays on the footer. */
-#define DISPLAY_STATUS_MS           4000U
+/* Fade of a value that just changed, in milliseconds. */
+#define UI_ANIM_MS              180U
 
-#define DISPLAY_ANIM_MS             200U
-#define DISPLAY_ROW_HEIGHT          32
-#define DISPLAY_TEXT_LEN            32U
-
-/* ------------------------------------------------------------------
- * Colours of the interface, one place so the look stays consistent.
- * ------------------------------------------------------------------ */
-#define DISPLAY_COL_BG              lv_color_hex(0x0F1720)
-#define DISPLAY_COL_CARD            lv_color_hex(0x1B2733)
-#define DISPLAY_COL_FOCUS           lv_color_hex(0x24405A)
-#define DISPLAY_COL_TEXT            lv_color_hex(0xE6EDF3)
-#define DISPLAY_COL_DIM             lv_color_hex(0x8296A8)
-#define DISPLAY_COL_ACCENT          lv_color_hex(0x3DDC84)
-#define DISPLAY_COL_WARN            lv_color_hex(0xFFB300)
-
-#define DISPLAY_HINT_DASH           "turn: move  press: run  hold: stats"
-#define DISPLAY_HINT_LINK           "turn: move  press: run  hold: back"
+/* Longest text of the interface: "NO DATA" is the longest one that is fixed. */
+#define UI_TEXT_LEN             24U
 
 /* ------------------------------------------------------------------
- * Screens, requests and actions.
+ * Grid geometry.
+ *
+ *   240 x 320 portrait, 24 px status bar on top.
+ *
+ *   Horizontally the two side margins and the column gap are 6 px:
+ *     6 + 111 + 6 + 111 + 6 = 240
+ *
+ *   Vertically the same 6 px gap leaves 90 px per card, and what is left over is
+ *   split evenly above and below the grid:
+ *     24 + 7 + 90 + 6 + 90 + 6 + 90 + 7 = 320
+ *
+ *   Both those strip margins are 7 px and not 6 px on purpose: with 6 px a card
+ *   would have to be 90.67 px tall, LVGL would round each of the three rows on
+ *   its own and the rows would no longer be the same height. Every card being
+ *   exactly 111 x 90 is worth more than the one pixel.
+ *
+ *   The rows of the detail, the settings and the link screen use the same strip,
+ *   so the six of them come out at 42 px each:
+ *     24 + 7 + 42 + 6 + ... + 42 + 7 = 320
  * ------------------------------------------------------------------ */
-#define DISPLAY_SCREEN_DASH         0U
-#define DISPLAY_SCREEN_LINK         1U
+#define UI_STATUS_H             24
+#define UI_MARGIN_X             6
+#define UI_GRID_X               UI_MARGIN_X
+#define UI_GRID_Y               (UI_STATUS_H + 7)
+#define UI_GAP                  6
+#define UI_CARD_W               111
+#define UI_CARD_H               90
+#define UI_CARD_RADIUS          12
+#define UI_CARD_PAD             8
+#define UI_STEP_X               (UI_CARD_W + UI_GAP)
+#define UI_STEP_Y               (UI_CARD_H + UI_GAP)
 
-/* Left behind by the interface, served by the main loop. */
-#define DISPLAY_REQ_NONE            0U
-#define DISPLAY_REQ_QUERY           1U
-#define DISPLAY_REQ_PERIOD          2U
-#define DISPLAY_REQ_BEEP            3U
+/* The strip the rows of the settings and the link screen fill exactly. */
+#define UI_GRID_W               (2 * UI_CARD_W + UI_GAP)
+#define UI_ROW_COUNT            6
+#define UI_ROW_H                42
+#define UI_ROW_RADIUS           12
+#define UI_ROW_GAP              UI_GAP
+#define UI_ROW_STEP             (UI_ROW_H + UI_ROW_GAP)
 
-/* Answers, rendered by the tick of the interface. */
-#define DISPLAY_STATUS_NONE         0U
-#define DISPLAY_STATUS_QUERY_OK     1U
-#define DISPLAY_STATUS_QUERY_FAIL   2U
-#define DISPLAY_STATUS_PERIOD_OK    3U
-#define DISPLAY_STATUS_PERIOD_FAIL  4U
-#define DISPLAY_STATUS_BEEP_OK      5U
-#define DISPLAY_STATUS_BEEP_FAIL    6U
+/* ------------------------------------------------------------------
+ * Colours, one place so the look stays consistent. Light, natural, quiet: the
+ * background is a warm grey green, the cards are white and only the small state
+ * dot carries a signal colour unless a reading is out of its band.
+ * ------------------------------------------------------------------ */
+#define UI_COL_BG               lv_color_hex(0xF4F6F3)
+#define UI_COL_CARD             lv_color_hex(0xFFFFFF)
+#define UI_COL_LINE             lv_color_hex(0xB8D0E8)   /* card border, a soft blue */
+#define UI_COL_FOCUS            lv_color_hex(0x3D7EBF)   /* focus ring, a clear blue */
+#define UI_COL_TEXT             lv_color_hex(0x2B2F36)
+#define UI_COL_DIM              lv_color_hex(0x7A828E)
+#define UI_COL_IDLE             lv_color_hex(0xC7CDC6)   /* dot with nothing to report */
+#define UI_COL_OK               lv_color_hex(0x3FAE8C)
+#define UI_COL_WARN             lv_color_hex(0xE8A93A)
+#define UI_COL_ALARM            lv_color_hex(0xE76F51)
+#define UI_COL_SHADOW           lv_color_hex(0x9AA3AD)
 
-/* What a click on a row asks for, handed over as the context of the handler. */
-#define DISPLAY_ACTION_QUERY        1U
-#define DISPLAY_ACTION_BEEP         2U
-#define DISPLAY_ACTION_PERIOD       3U
-#define DISPLAY_ACTION_SCREEN       4U
+/* A soft shadow, not a heavy one. */
+#define UI_SHADOW_W             8
+#define UI_SHADOW_OPA           LV_OPA_10
 
-/* Report periods the knob cycles through, the node takes 1000 .. 60000 ms.
-   The first entry is what the node reports at until the first click, see the
-   default report period of the node side. */
-#define DISPLAY_PERIOD_COUNT        4U
+/* ------------------------------------------------------------------
+ * Fonts. Montserrat 14 is the default font of LVGL and therefore always there,
+ * the other three are turned on in sdkconfig.defaults.
+ * ------------------------------------------------------------------ */
+#define UI_FONT_TINY            (&lv_font_montserrat_12)
+#define UI_FONT_BODY            (&lv_font_montserrat_14)
+#define UI_FONT_TITLE           (&lv_font_montserrat_16)
+#define UI_FONT_MID             (&lv_font_montserrat_20)
 
-static const uint32_t s_periods[DISPLAY_PERIOD_COUNT] = { 2000U, 5000U, 10000U, 30000U };
+/* Width of the focus marker of a card and of a row, and the padding a row of a
+   list screen keeps on both sides of its own text. The marker is the very border
+   a card and a row always carry, thickened while the knob rests on them, so a
+   card never shows a second ring around the one it already has. The padding
+   gives back the pixel the wider border takes, so no text ever moves when the
+   focus arrives. */
+#define UI_FOCUS_LINE           2
+#define UI_ROW_PAD_H            10
+
+/* ------------------------------------------------------------------
+ * Screens, levels, requests and actions.
+ * ------------------------------------------------------------------ */
+#define UI_SCREEN_COUNT         4U
+#define UI_SCREEN_MAIN          0U
+#define UI_SCREEN_SET           1U
+#define UI_SCREEN_LINK          2U
+#define UI_SCREEN_DET           3U
+
+/* State of one reading, in this order from quiet to loud. */
+#define UI_LEVEL_UNKNOWN        0U
+#define UI_LEVEL_OK             1U
+#define UI_LEVEL_WARN           2U
+#define UI_LEVEL_ALARM          3U
+
+/* Left behind by the interface and served by the main loop. */
+#define UI_REQ_NONE             0U
+#define UI_REQ_QUERY            1U
+#define UI_REQ_PERIOD           2U
+#define UI_REQ_BEEP             3U
+#define UI_REQ_READ             4U
+
+/* Answers of the main loop, rendered by the tick of the interface. */
+#define UI_STATUS_NONE          0U
+#define UI_STATUS_QUERY_OK      1U
+#define UI_STATUS_QUERY_FAIL    2U
+#define UI_STATUS_PERIOD_OK     3U
+#define UI_STATUS_PERIOD_FAIL   4U
+#define UI_STATUS_BEEP_OK       5U
+#define UI_STATUS_BEEP_FAIL     6U
+
+/* What a click asks for, handed over as the context of the event callback, so
+   no integer is ever cast back into a pointer. */
+#define UI_ACT_SET              1U
+#define UI_ACT_MAIN             2U
+#define UI_ACT_LINK             3U
+#define UI_ACT_QUERY            4U
+#define UI_ACT_PERIOD           5U
+#define UI_ACT_BEEP             6U
+#define UI_ACT_BRIGHT           7U
+#define UI_ACT_DET_LOW          8U
+#define UI_ACT_DET_HIGH         9U
+#define UI_ACT_DET_BACK         10U
+
+/* The six cards of the main screen carry their own index in the context instead
+   of an action code, so one handler serves them and the rows of the list screens
+   alike. */
+#define UI_ACT_CARD_BASE        0x20U
+
+/* ------------------------------------------------------------------
+ * The six cards of the main screen.
+ *
+ * One table drives the whole screen: the caption, the unit, the item of the link
+ * the value comes from, and the two thresholds the reading is judged against.
+ *
+ * A threshold is a plain number the knob can walk, from the first to the last
+ * value of its range, one step per detent. It lives here only, it is never sent
+ * to the node, and it lives in RAM: a reboot brings the defaults back.
+ *
+ * A reading under the low threshold or over the high one warns; it turns into an
+ * alarm once it is margin past it. That leaves one number per side on the screen
+ * while the colour still says how bad it got.
+ *
+ * Values are scaled by 100 exactly like the values on the link, so 3000 is 30.00.
+ * A card whose item is 0 has no source on the link yet and shows "NO DATA".
+ * ------------------------------------------------------------------ */
+#define UI_CARD_COUNT           6U
+#define UI_CARD_SYSTEM          5U
+
+/* One threshold: the range the knob walks and what it is set to. */
+typedef struct
+{
+    int32_t min;            /* first value of the range                          */
+    int32_t max;            /* last value of the range                           */
+    int32_t step;           /* one detent of the knob                            */
+    int32_t value;          /* what it is set to, scaled by 100 like a reading   */
+} ui_limit_t;
+
+typedef struct
+{
+    const char *caption;    /* headline of the card                              */
+    const char *unit;       /* unit behind the value                             */
+    uint8_t     id;         /* LINK_ID_xxx, 0 when the link carries no such item */
+    uint8_t     decimals;   /* digits behind the decimal point                   */
+    int32_t     margin;     /* how far past a threshold is still a warning       */
+    ui_limit_t  low;        /* threshold of the low side                         */
+    ui_limit_t  high;       /* threshold of the high side                        */
+} ui_card_t;
+
+/* The five readings keep a band, the sixth card is only the way into the
+   settings. A card the node has no sensor for carries a band all the same, so it
+   is ready the day that item starts to arrive.
+
+   Every threshold can be turned across the whole span of the sensor behind it, so
+   no reading the node can produce is out of reach: -40.0 to 80.0 for temperature,
+   0.0 to 100.0 % for humidity and for the soil probe, 0 to 5000 ppm for CO2 and
+   0 to 100000 lx for the light. The step is a whole number of the unit as the card
+   shows it, and every default below sits on that step. */
+static ui_card_t s_cards[UI_CARD_COUNT] =
+{
+    /* caption   unit           id                dec  margin
+       low  { min, max, step, value }        high { min, max, step, value } */
+    { "TEMP",  "\xC2\xB0" "C", LINK_ID_TEMP,  1U,   500,
+      { -4000,   4000,   100,   1000 }, {  -4000,   8000,   100,   3000 } },
+    { "HUMI",  "%",            LINK_ID_HUMI,  1U,  1000,
+      {     0,  10000,   100,   3000 }, {      0,  10000,   100,   8000 } },
+    { "CO2",   "ppm",          LINK_ID_CO2,   0U, 50000,
+      {     0, 500000, 10000,  40000 }, {      0, 500000, 10000, 120000 } },
+    { "SOIL",  "%",            LINK_ID_SOIL,  1U,  1000,
+      {     0,  10000,   100,   2500 }, {      0,  10000,   100,   8000 } },
+    { "LIGHT", "lx",           LINK_ID_LIGHT, 0U, 20000,
+      {     0, 1000000, 10000,  20000 }, {      0, 10000000, 100000, 200000 } },
+    { "SYSTEM", "",            0U,            0U,     0,
+      {     0,      0,     0,      0 }, {      0,      0,     0,      0 } }
+};
+
+/* ------------------------------------------------------------------
+ * Rows of the settings screen and of the link screen.
+ * ------------------------------------------------------------------ */
+#define UI_SET_BRIGHT           0U
+#define UI_SET_PERIOD           1U
+#define UI_SET_BEEP             2U
+#define UI_SET_QUERY            3U
+#define UI_SET_LINK             4U
+#define UI_SET_BACK             5U
+
+#define UI_LINK_FRAME_OK        0U
+#define UI_LINK_FRAME_BAD       1U
+#define UI_LINK_TX_OK           2U
+#define UI_LINK_TX_TIMEOUT      3U
+#define UI_LINK_RESEND          4U
+#define UI_LINK_BACK            5U
+
+/* Rows of the detail screen of one reading: what the card is worth right now,
+   the extremes it reached since the gateway came up, and the two thresholds the
+   knob can turn. */
+#define UI_DET_LIVE             0U
+#define UI_DET_MIN              1U
+#define UI_DET_MAX              2U
+#define UI_DET_LOW              3U
+#define UI_DET_HIGH             4U
+#define UI_DET_BACK             5U
+
+/* Backlight steps the knob cycles through, the first entry is what
+   dev_lcd_init() leaves behind. */
+#define UI_BRIGHT_COUNT         5U
+
+static const uint8_t s_bright[UI_BRIGHT_COUNT] = { 100U, 80U, 60U, 40U, 20U };
+
+/* Report periods the knob cycles through, the node takes 1000 .. 60000 ms. */
+#define UI_PERIOD_COUNT         4U
+
+static const uint32_t s_periods[UI_PERIOD_COUNT] = { 2000U, 5000U, 10000U, 30000U };
+
+/* Titles of the screens, the first slot of the status bar on each. The detail
+   screen barely uses its own: it names the card it opens instead. */
+static const char *s_titles[UI_SCREEN_COUNT] =
+{
+    "ENV MONITOR", "SETTINGS", "LINK", "DETAIL"
+};
 
 /* ------------------------------------------------------------------
  * State.
  * ------------------------------------------------------------------ */
+
+/* The status bar of one screen: the title on the left, the state of the WiFi
+   link on the right. */
+typedef struct
+{
+    lv_obj_t *title;
+    lv_obj_t *dot;
+    lv_obj_t *wifi;
+} ui_bar_t;
+
 static lv_display_t *s_disp;
 static lv_indev_t   *s_indev;
-static lv_obj_t     *s_scr_dash;
-static lv_obj_t     *s_scr_link;
-static lv_group_t   *s_group_dash;
-static lv_group_t   *s_group_link;
 
-/* Every screen owns its own widgets, the two headers and the two footers are
-   therefore two separate pairs. */
-static lv_obj_t *s_badge_dash;
-static lv_obj_t *s_badge_link;
-static lv_obj_t *s_state_dash;
-static lv_obj_t *s_state_link;
-static lv_obj_t *s_footer_dash;
-static lv_obj_t *s_footer_link;
+static lv_obj_t *s_scr[UI_SCREEN_COUNT];
+static lv_group_t *s_group[UI_SCREEN_COUNT];
+static ui_bar_t    s_bar[UI_SCREEN_COUNT];
 
-static lv_obj_t *s_lbl_temp;
-static lv_obj_t *s_lbl_humi;
-static lv_obj_t *s_lbl_buzzer;
-static lv_obj_t *s_lbl_period;
-static lv_obj_t *s_lbl_frames_ok;
-static lv_obj_t *s_lbl_frames_bad;
-static lv_obj_t *s_lbl_tx_ok;
-static lv_obj_t *s_lbl_tx_timeout;
-static lv_obj_t *s_lbl_tx_resend;
+/* The object the knob lands on when a screen comes up. */
+static lv_obj_t *s_first[UI_SCREEN_COUNT];
+
+/* One set of pointers per card, indexed by UI_CARD_xxx. */
+static lv_obj_t *s_card_value[UI_CARD_COUNT];
+static lv_obj_t *s_card_state[UI_CARD_COUNT];
+static lv_obj_t *s_card_dot[UI_CARD_COUNT];
+
+/* Extremes each reading reached since the gateway came up, and whether it ever
+   answered at all. Nothing here is kept across a reboot: it describes one run of
+   the gateway, not the history of the node. */
+static int32_t s_card_min[UI_CARD_COUNT];
+static int32_t s_card_max[UI_CARD_COUNT];
+static uint8_t s_card_seen[UI_CARD_COUNT];
+
+/* The sixth card is the way into the settings, and the only place the clock of
+   the gateway shows: the date above the time. */
+static lv_obj_t *s_sys_date;
+static lv_obj_t *s_sys_time;
+static lv_obj_t *s_sys_dot;
+
+/* Right hand labels of the two list screens. */
+static lv_obj_t *s_set_value[UI_ROW_COUNT];
+static lv_obj_t *s_link_value[UI_ROW_COUNT];
+
+/* Right hand labels of the detail screen, indexed by UI_DET_xxx. */
+static lv_obj_t *s_det_value[UI_ROW_COUNT];
 
 /* Written by the LVGL task and read by the main loop, one byte either way. */
 static volatile uint8_t s_request;
 static volatile uint8_t s_status;
 static volatile uint8_t s_status_seq;
+
+/* Written by whoever owns the network of the gateway and read by the LVGL
+   task, one byte either way. The bars refresh on their own, so nothing has
+   to be signalled when this moves. */
+static volatile uint8_t s_net_state;
+
+/* Raised by the main loop once a setting it owns has moved. The label of that
+   setting is then written by the LVGL task, never by the main loop. */
+static volatile uint8_t s_set_dirty;
 
 /* Written and read by the LVGL task only. */
 static uint8_t  s_screen;
@@ -149,37 +382,70 @@ static uint8_t  s_back_pending;
 static uint8_t  s_shown_status;
 static uint8_t  s_shown_seq;
 static uint8_t  s_period_index;
+static uint8_t  s_read_id;
+static uint8_t  s_bright_index;
 static uint8_t  s_buzzer_on;
+static uint8_t  s_worst_level;
 static uint32_t s_last_refresh;
 static uint32_t s_status_until;
 
-/* Handed to the click handler as its context, so no integer is ever cast back
-   into a pointer. */
-static const uint8_t s_action_query  = DISPLAY_ACTION_QUERY;
-static const uint8_t s_action_beep   = DISPLAY_ACTION_BEEP;
-static const uint8_t s_action_period = DISPLAY_ACTION_PERIOD;
-static const uint8_t s_action_screen = DISPLAY_ACTION_SCREEN;
+/* The detail screen: which card it shows, and the threshold the knob is turning.
+   A detent is latched by the input callback and applied by the tick, exactly
+   like a click, so the value moves without the focus ring ever moving. */
+static uint8_t  s_detail_card;
+static uint8_t  s_edit;
+static uint8_t  s_edit_side;
+static uint8_t  s_edit_click;
+static uint8_t  s_edit_back;
+static int32_t  s_edit_steps;
+
+/* Handed to the click handler as its context. */
+static const uint8_t s_act_main   = UI_ACT_MAIN;
+static const uint8_t s_act_link   = UI_ACT_LINK;
+static const uint8_t s_act_query  = UI_ACT_QUERY;
+static const uint8_t s_act_period = UI_ACT_PERIOD;
+static const uint8_t s_act_beep   = UI_ACT_BEEP;
+static const uint8_t s_act_bright = UI_ACT_BRIGHT;
+
+/* The three rows of the detail screen the knob can act on. */
+static const uint8_t s_act_det_low  = UI_ACT_DET_LOW;
+static const uint8_t s_act_det_high = UI_ACT_DET_HIGH;
+static const uint8_t s_act_det_back = UI_ACT_DET_BACK;
+
+/* Context of the six cards, indexed by UI_CARD_xxx: the first five ask the node for
+   their own reading, the sixth opens the settings. */
+static const uint8_t s_card_ctx[UI_CARD_COUNT] =
+{
+    (uint8_t)(UI_ACT_CARD_BASE + 0U), (uint8_t)(UI_ACT_CARD_BASE + 1U),
+    (uint8_t)(UI_ACT_CARD_BASE + 2U), (uint8_t)(UI_ACT_CARD_BASE + 3U),
+    (uint8_t)(UI_ACT_CARD_BASE + 4U), (uint8_t)(UI_ACT_CARD_BASE + 5U)
+};
 
 /* ------------------------------------------------------------------
- * Forward declarations, the builders below use the handler and the helper
- * uses the builders.
+ * Forward declarations: the builders use the handler and the helpers use the
+ * builders, so the whole set is announced here.
  * ------------------------------------------------------------------ */
 static void Display_OnAction(lv_event_t *event);
-static void Display_BuildDashboard(void);
+static void Display_BuildMain(void);
+static void Display_BuildSettings(void);
 static void Display_BuildLink(void);
+static void Display_BuildDetail(void);
 static void Display_ShowScreen(uint8_t screen);
 static void Display_Refresh(void);
 static void Display_UpdateSettings(void);
-static void Display_UpdateFooter(void);
-
+static void Display_UpdateStatus(void);
+static void Display_UpdateDetail(void);
+static void Display_BeginEdit(uint8_t side);
+static void Display_EndEdit(void);
+static void Display_EditTick(void);
 /* ------------------------------------------------------------------
  * Small helpers.
  * ------------------------------------------------------------------ */
 
 /**
  * @brief  Write a label only when its text really changed.
- * @note   Every change turns into traffic on the panel bus, so a comparison
- *         here is worth more than it looks.
+ * @note   Every change turns into traffic on the panel bus, so the comparison is
+ *         worth more than it looks: the refresh runs five times a second.
  * @param  label: label to write.
  * @param  text:  new text, a NULL is ignored.
  */
@@ -200,291 +466,679 @@ static void Display_SetText(lv_obj_t *label, const char *text)
 }
 
 /**
- * @brief  Turn a value of the link into text with two decimals.
- * @note   The wire carries values scaled by 100, so 2340 means 23.40.
- * @note   Only %d is used: the built in formatter of LVGL does not have to
- *         understand the length modifiers of the C library for this.
- * @param  out:    destination buffer.
- * @param  len:    size of that buffer.
- * @param  scaled: value as it came off the link.
- * @param  unit:   unit appended behind a space.
+ * @brief  Turn a value of the link into the text of its card.
+ * @note   The wire carries values scaled by 100, so 2340 is 23.40. A card with
+ *         one decimal therefore shows 23.4 and a card with none shows 23.
+ * @param  out:      destination buffer.
+ * @param  len:      size of that buffer.
+ * @param  scaled:   value as it came off the link.
+ * @param  decimals: digits behind the decimal point, 0 or 1.
  */
-static void Display_FormatScaled(char *out, size_t len, int32_t scaled, const char *unit)
+static void Display_FormatValue(char *out, size_t len, int32_t scaled, uint8_t decimals)
 {
-    int32_t whole = scaled / 100;
-    int32_t frac = scaled % 100;
+    int32_t rounded;
+    int32_t whole;
+    int32_t frac;
 
+    if (decimals == 0U)
+    {
+        rounded = (scaled >= 0) ? ((scaled + 50) / 100) : ((scaled - 50) / 100);
+        lv_snprintf(out, len, "%d", (int)rounded);
+        return;
+    }
+    rounded = (scaled >= 0) ? ((scaled + 5) / 10) : ((scaled - 5) / 10);
+    whole = rounded / 10;
+    frac = rounded % 10;
     if (frac < 0)
     {
         frac = -frac;
     }
-    if ((scaled < 0) && (whole == 0))
+    if ((scaled < 0) && (whole == 0) && (frac != 0))
     {
-        lv_snprintf(out, len, "-%d.%02d %s", (int)whole, (int)frac, unit);
+        /* -0.4 must not lose its sign to the integer division above. */
+        lv_snprintf(out, len, "-%d.%d", (int)whole, (int)frac);
+        return;
     }
-    else
+    lv_snprintf(out, len, "%d.%d", (int)whole, (int)frac);
+}
+
+/**
+ * @brief  Turn a value of the link into the text of the detail screen.
+ * @note   The very number the card shows, with the unit behind it, so a line of
+ *         the detail screen can be read on its own.
+ * @param  out:    destination buffer.
+ * @param  len:    size of that buffer.
+ * @param  scaled: value as it came off the link.
+ * @param  card:   card the value belongs to.
+ */
+static void Display_FormatWithUnit(char *out, size_t len, int32_t scaled,
+                                   const ui_card_t *card)
+{
+    char number[UI_TEXT_LEN];
+
+    Display_FormatValue(number, sizeof(number), scaled, card->decimals);
+    if (card->unit[0] == '\0')
     {
-        lv_snprintf(out, len, "%d.%02d %s", (int)whole, (int)frac, unit);
+        lv_snprintf(out, len, "%s", number);
+        return;
+    }
+    lv_snprintf(out, len, "%s %s", number, card->unit);
+}
+
+/**
+ * @brief  Read the wall clock of the gateway.
+ * @note   The chip has no battery backed clock, so the system time only becomes
+ *         meaningful once the gateway has a network stack and asks an NTP
+ *         server. Until then this reports that there is no time.
+ * @param  out: destination of the broken down time.
+ * @retval 1 when the clock is set, 0 otherwise.
+ */
+static uint8_t Display_ReadClock(struct tm *out)
+{
+    time_t now = time(NULL);
+    struct tm broken;
+
+    if ((now == (time_t)-1) || (localtime_r(&now, &broken) == NULL))
+    {
+        return 0U;
+    }
+    if ((broken.tm_year + 1900) < 2020)
+    {
+        return 0U;
+    }
+    *out = broken;
+    return 1U;
+}
+
+/**
+ * @brief  Clock as HH:MM, or --:-- while the gateway has no time source.
+ * @param  out: destination buffer.
+ * @param  len: size of that buffer.
+ */
+static void Display_FormatClock(char *out, size_t len)
+{
+    struct tm broken;
+
+    if (Display_ReadClock(&broken) == 0U)
+    {
+        lv_snprintf(out, len, "--:--");
+        return;
+    }
+    lv_snprintf(out, len, "%02d:%02d", (int)broken.tm_hour, (int)broken.tm_min);
+}
+
+/** Month names of the date line, three letters each. */
+static const char *s_months[12] =
+{
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+};
+
+/**
+ * @brief  Date as Mmm YYYY, or -- while the gateway has no time source.
+ * @param  out: destination buffer.
+ * @param  len: size of that buffer.
+ */
+static void Display_FormatDate(char *out, size_t len)
+{
+    struct tm broken;
+    int32_t month;
+
+    if (Display_ReadClock(&broken) == 0U)
+    {
+        lv_snprintf(out, len, "--");
+        return;
+    }
+    month = broken.tm_mon;
+    if ((month < 0) || (month > 11))
+    {
+        month = 0;
+    }
+    lv_snprintf(out, len, "%s %d", s_months[month], (int)(broken.tm_year + 1900));
+}
+
+/**
+ * @brief  Colour of one state.
+ * @param  level: UI_LEVEL_xxx.
+ * @retval the colour of that state.
+ */
+static lv_color_t Display_LevelColor(uint8_t level)
+{
+    switch (level)
+    {
+        case UI_LEVEL_OK:
+            return UI_COL_OK;
+        case UI_LEVEL_WARN:
+            return UI_COL_WARN;
+        case UI_LEVEL_ALARM:
+            return UI_COL_ALARM;
+        default:
+            return UI_COL_IDLE;
     }
 }
 
 /**
- * @brief  Text of one status code.
- * @param  code: DISPLAY_STATUS_xxx.
- * @retval the text, empty for DISPLAY_STATUS_NONE.
+ * @brief  Judge one reading against the band of its card.
+ * @param  card:  card the reading belongs to.
+ * @param  value: reading, scaled by 100.
+ * @param  high:  receives 1 when the upper threshold was crossed, 0 otherwise.
+ * @retval UI_LEVEL_xxx.
+ * @note   A reading outside the band warns, and the same reading warns louder once
+ *         it is the margin of its card past the threshold. One number per side is
+ *         all the detail screen has to offer, the colour still says how bad it got.
  */
-static const char *Display_StatusText(uint8_t code)
+static uint8_t Display_Judge(const ui_card_t *card, int32_t value, uint8_t *high)
 {
-    switch (code)
+    *high = 0U;
+    if (value < card->low.value)
     {
-        case DISPLAY_STATUS_QUERY_OK:
-            return "query ok";
-        case DISPLAY_STATUS_QUERY_FAIL:
-            return "query failed";
-        case DISPLAY_STATUS_PERIOD_OK:
-            return "period set";
-        case DISPLAY_STATUS_PERIOD_FAIL:
-            return "period rejected";
-        case DISPLAY_STATUS_BEEP_OK:
-            return "buzzer set";
-        case DISPLAY_STATUS_BEEP_FAIL:
-            return "buzzer rejected";
+        return ((value < (card->low.value - card->margin)) ? UI_LEVEL_ALARM
+                                                          : UI_LEVEL_WARN);
+    }
+    if (value > card->high.value)
+    {
+        *high = 1U;
+        return ((value > (card->high.value + card->margin)) ? UI_LEVEL_ALARM
+                                                           : UI_LEVEL_WARN);
+    }
+    return UI_LEVEL_OK;
+}
+
+/**
+ * @brief  Text of one state.
+ * @param  level: UI_LEVEL_xxx.
+ * @param  high:  1 when the upper limit was crossed.
+ * @retval the text, never NULL.
+ */
+static const char *Display_LevelText(uint8_t level, uint8_t high)
+{
+    if (level == UI_LEVEL_UNKNOWN)
+    {
+        return "NO DATA";
+    }
+    if (level == UI_LEVEL_OK)
+    {
+        return "OK";
+    }
+    return (high != 0U) ? "HIGH" : "LOW";
+}
+
+/**
+ * @brief  What the first slot of the status bar of one screen carries.
+ * @note   Every screen but the detail one carries its own title. The detail screen
+ *         names the card it shows, and says which of its two thresholds the knob
+ *         is turning, which is the one place a detent does more than walk the
+ *         focus ring.
+ * @param  screen: UI_SCREEN_xxx.
+ * @retval the text, never NULL.
+ */
+static const char *Display_BarTitle(uint8_t screen)
+{
+    if (screen == UI_SCREEN_DET)
+    {
+        if (s_edit != 0U)
+        {
+            return (s_edit_side == 0U) ? "EDIT LOW" : "EDIT HIGH";
+        }
+        return s_cards[s_detail_card].caption;
+    }
+    return s_titles[screen];
+}
+
+/**
+ * @brief  Put that text into the status bar of one screen.
+ * @param  screen: UI_SCREEN_xxx.
+ */
+static void Display_SetBarTitle(uint8_t screen)
+{
+    lv_label_set_text(s_bar[screen].title, Display_BarTitle(screen));
+    lv_obj_set_style_text_color(s_bar[screen].title, UI_COL_TEXT, 0);
+}
+
+/**
+ * @brief  Apply one step of the fade, called by the animation of the value.
+ * @param  obj:   label being faded.
+ * @param  value: opacity of this step.
+ */
+static void Display_AnimOpa(void *obj, int32_t value)
+{
+    lv_obj_set_style_opa((lv_obj_t *)obj, (lv_opa_t)value, 0);
+}
+
+/**
+ * @brief  Fade a value in when it just changed.
+ * @note   One animation at a time per label, a new value restarts it instead of
+ *         stacking up.
+ * @param  obj: label that carries the value.
+ */
+static void Display_Pulse(lv_obj_t *obj)
+{
+    lv_anim_t anim;
+
+    if (obj == NULL)
+    {
+        return;
+    }
+    (void)lv_anim_delete(obj, NULL);
+    lv_anim_init(&anim);
+    lv_anim_set_var(&anim, obj);
+    lv_anim_set_exec_cb(&anim, Display_AnimOpa);
+    lv_anim_set_values(&anim, LV_OPA_40, LV_OPA_COVER);
+    lv_anim_set_duration(&anim, UI_ANIM_MS);
+    lv_anim_set_path_cb(&anim, lv_anim_path_ease_out);
+    (void)lv_anim_start(&anim);
+}
+
+/**
+ * @brief  Create a container without a background, a border or a padding.
+ * @param  parent: object the container belongs to.
+ * @retval the container.
+ */
+static lv_obj_t *Display_CreateBox(lv_obj_t *parent)
+{
+    lv_obj_t *box = lv_obj_create(parent);
+
+    lv_obj_set_style_bg_opa(box, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(box, 0, 0);
+    lv_obj_set_style_radius(box, 0, 0);
+    lv_obj_set_style_pad_all(box, 0, 0);
+    lv_obj_set_scrollable(box, false);
+    return box;
+}
+
+/**
+ * @brief  Create one state dot.
+ * @param  parent: object the dot belongs to.
+ * @param  color:  colour of the first frame.
+ * @retval the dot.
+ */
+static lv_obj_t *Display_CreateDot(lv_obj_t *parent, lv_color_t color)
+{
+    lv_obj_t *dot = lv_obj_create(parent);
+
+    lv_obj_set_size(dot, 6, 6);
+    lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(dot, color, 0);
+    lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(dot, 0, 0);
+    lv_obj_set_style_pad_all(dot, 0, 0);
+    lv_obj_set_scrollable(dot, false);
+    return dot;
+}
+
+/**
+ * @brief  Place a card on the two by three grid.
+ * @note   The position comes from the index, so a card can never drift out of
+ *         the grid by a wrong constant.
+ * @param  card:  card to place.
+ * @param  index: UI_CARD_xxx, read as column first.
+ */
+static void Display_PlaceCard(lv_obj_t *card, uint8_t index)
+{
+    lv_coord_t x = (lv_coord_t)UI_GRID_X + (lv_coord_t)(index % 2U) * (lv_coord_t)UI_STEP_X;
+    lv_coord_t y = (lv_coord_t)UI_GRID_Y + (lv_coord_t)(index / 2U) * (lv_coord_t)UI_STEP_Y;
+
+    lv_obj_set_pos(card, x, y);
+}
+
+/**
+ * @brief  Place a row of the settings or the link screen.
+ * @param  row:   row to place.
+ * @param  index: zero based row number.
+ */
+static void Display_PlaceRow(lv_obj_t *row, uint8_t index)
+{
+    lv_coord_t y = (lv_coord_t)UI_GRID_Y + (lv_coord_t)index * (lv_coord_t)UI_ROW_STEP;
+
+    lv_obj_set_pos(row, (lv_coord_t)UI_GRID_X, y);
+}
+
+/**
+ * @brief  State of the network link as one short line.
+ * @note   These three words are the whole vocabulary of the field: the link
+ *         is busy, it works, or it does not. Every status bar reads this one
+ *         function, so only it has to change.
+ * @retval the text, never NULL.
+ */
+static const char *Display_WifiText(void)
+{
+    switch (s_net_state)
+    {
+        case TASK_DISPLAY_NET_CONNECTING:
+            return "WIFI ...";
+        case TASK_DISPLAY_NET_OK:
+            return "WIFI OK";
+        case TASK_DISPLAY_NET_ERR:
+            return "WIFI ERR";
         default:
-            return "";
+            return "WIFI --";
     }
 }
 
 /* ------------------------------------------------------------------
- * Building blocks of the two screens.
+ * The status bar, the same one on all three screens.
  * ------------------------------------------------------------------ */
 
 /**
- * @brief  Create the root of one screen with the shared background.
+ * @brief  Create the status bar of one screen.
+ * @param  screen: UI_SCREEN_xxx.
+ */
+static void Display_BuildBar(uint8_t screen)
+{
+    ui_bar_t *bar = &s_bar[screen];
+    lv_obj_t *strip;
+    lv_obj_t *right;
+
+    strip = lv_obj_create(s_scr[screen]);
+    lv_obj_set_size(strip, (lv_coord_t)DEV_LCD_H_RES, (lv_coord_t)UI_STATUS_H);
+    lv_obj_set_pos(strip, 0, 0);
+    lv_obj_set_style_radius(strip, 0, 0);
+    lv_obj_set_style_bg_color(strip, UI_COL_CARD, 0);
+    lv_obj_set_style_bg_opa(strip, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(strip, 1, 0);
+    lv_obj_set_style_border_color(strip, UI_COL_LINE, 0);
+    lv_obj_set_style_border_side(strip, LV_BORDER_SIDE_BOTTOM, 0);
+    lv_obj_set_style_pad_hor(strip, (lv_coord_t)UI_MARGIN_X, 0);
+    lv_obj_set_style_pad_ver(strip, 0, 0);
+    lv_obj_set_scrollable(strip, false);
+    lv_obj_set_flex_flow(strip, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(strip, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+
+    bar->title = lv_label_create(strip);
+    Display_SetBarTitle(screen);
+    lv_obj_set_style_text_font(bar->title, UI_FONT_TINY, 0);
+    lv_obj_set_style_text_letter_space(bar->title, 1, 0);
+
+    right = Display_CreateBox(strip);
+    lv_obj_set_size(right, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(right, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(right, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(right, 6, 0);
+
+    bar->dot = Display_CreateDot(right, UI_COL_IDLE);
+
+    bar->wifi = lv_label_create(right);
+    lv_label_set_text(bar->wifi, Display_WifiText());
+    lv_obj_set_style_text_font(bar->wifi, UI_FONT_TINY, 0);
+    lv_obj_set_style_text_color(bar->wifi, UI_COL_DIM, 0);
+}
+
+/**
+ * @brief  Bring the status bar of one screen up to date.
+ * @param  screen: UI_SCREEN_xxx.
+ */
+static void Display_UpdateBar(uint8_t screen)
+{
+    Display_SetText(s_bar[screen].wifi, Display_WifiText());
+    lv_obj_set_style_bg_color(s_bar[screen].dot, Display_LevelColor(s_worst_level), 0);
+}
+/* ------------------------------------------------------------------
+ * Building blocks of the three screens.
+ * ------------------------------------------------------------------ */
+
+/**
+ * @brief  Create the root of one screen.
+ * @note   No layout is set on a screen: every child is placed on explicit pixels,
+ *         which is what makes the grid exactly symmetric.
  * @retval the screen object.
  */
 static lv_obj_t *Display_CreateScreen(void)
 {
     lv_obj_t *scr = lv_obj_create(NULL);
 
-    lv_obj_set_style_bg_color(scr, DISPLAY_COL_BG, 0);
+    lv_obj_set_style_bg_color(scr, UI_COL_BG, 0);
+    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(scr, 0, 0);
-    lv_obj_set_style_pad_all(scr, 8, 0);
-    lv_obj_set_style_pad_row(scr, 8, 0);
-    lv_obj_set_flex_flow(scr, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(scr, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_style_pad_all(scr, 0, 0);
     lv_obj_set_scrollable(scr, false);
     return scr;
 }
 
 /**
- * @brief  Create the title bar with the link state badge on its right.
- * @param  parent:    screen the bar belongs to.
- * @param  title:     text on the left.
- * @param  badge_out: receives the badge, its colour is the link state.
- * @param  state_out: receives the label inside the badge.
+ * @brief  Create one card of the main screen.
+ * @note   All six cards are built by this one function so they cannot end up
+ *         different: same size, same radius, same padding, same three lines.
+ *         The sixth one only carries different content.
+ * @param  index: UI_CARD_xxx.
+ * @retval the card, the main screen keeps the one of the system card.
  */
-static void Display_CreateHeader(lv_obj_t *parent, const char *title,
-                                 lv_obj_t **badge_out, lv_obj_t **state_out)
+static lv_obj_t *Display_BuildCard(uint8_t index)
 {
-    lv_obj_t *header = lv_obj_create(parent);
+    const ui_card_t *desc = &s_cards[index];
+    lv_obj_t *card = lv_obj_create(s_scr[UI_SCREEN_MAIN]);
+    lv_obj_t *top;
+    lv_obj_t *mid;
+    lv_obj_t *bottom;
     lv_obj_t *label;
-    lv_obj_t *badge;
-    lv_obj_t *state;
 
-    lv_obj_set_size(header, LV_PCT(100), 30);
-    lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(header, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+    lv_obj_set_size(card, (lv_coord_t)UI_CARD_W, (lv_coord_t)UI_CARD_H);
+    Display_PlaceCard(card, index);
+    lv_obj_set_style_radius(card, (lv_coord_t)UI_CARD_RADIUS, 0);
+    lv_obj_set_style_bg_color(card, UI_COL_CARD, 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(card, 1, 0);
+    lv_obj_set_style_border_color(card, UI_COL_LINE, 0);
+    lv_obj_set_style_pad_all(card, (lv_coord_t)UI_CARD_PAD, 0);
+    lv_obj_set_style_shadow_width(card, (lv_coord_t)UI_SHADOW_W, 0);
+    lv_obj_set_style_shadow_opa(card, (lv_opa_t)UI_SHADOW_OPA, 0);
+    lv_obj_set_style_shadow_color(card, UI_COL_SHADOW, 0);
+    lv_obj_set_style_shadow_offset_y(card, 1, 0);
+    lv_obj_set_scrollable(card, false);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(card, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_START,
+                          LV_FLEX_ALIGN_START);
+
+    /* First line: the name of the reading, and its state as a dot. */
+    top = Display_CreateBox(card);
+    lv_obj_set_width(top, LV_PCT(100));
+    lv_obj_set_height(top, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(top, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(top, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_all(header, 0, 0);
-    lv_obj_set_style_bg_opa(header, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(header, 0, 0);
-    lv_obj_set_scrollable(header, false);
 
-    label = lv_label_create(header);
-    lv_label_set_text(label, title);
-    lv_obj_set_style_text_color(label, DISPLAY_COL_TEXT, 0);
-    lv_obj_set_style_text_font(label, &lv_font_montserrat_16, 0);
+    label = lv_label_create(top);
+    lv_label_set_text(label, desc->caption);
+    lv_obj_set_style_text_font(label, UI_FONT_BODY, 0);
+    lv_obj_set_style_text_color(label, UI_COL_TEXT, 0);
+    lv_obj_set_style_text_letter_space(label, 1, 0);
 
-    badge = lv_obj_create(header);
-    lv_obj_set_size(badge, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(badge, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(badge, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
+    s_card_dot[index] = Display_CreateDot(top, UI_COL_IDLE);
+
+    /* Second line: the reading, with its unit on the baseline. */
+    mid = Display_CreateBox(card);
+    lv_obj_set_width(mid, LV_PCT(100));
+    lv_obj_set_height(mid, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(mid, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(mid, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
+    lv_obj_set_style_pad_column(mid, 3, 0);
+
+    if (index == UI_CARD_SYSTEM)
+    {
+        s_sys_date = lv_label_create(mid);
+        lv_label_set_text(s_sys_date, "--");
+        lv_obj_set_style_text_font(s_sys_date, UI_FONT_TITLE, 0);
+        lv_obj_set_style_text_color(s_sys_date, UI_COL_TEXT, 0);
+    }
+    else
+    {
+        s_card_value[index] = lv_label_create(mid);
+        lv_label_set_text(s_card_value[index], "--");
+        lv_obj_set_style_text_font(s_card_value[index], UI_FONT_MID, 0);
+        lv_obj_set_style_text_color(s_card_value[index], UI_COL_TEXT, 0);
+
+        label = lv_label_create(mid);
+        lv_label_set_text(label, desc->unit);
+        lv_obj_set_style_text_font(label, UI_FONT_TINY, 0);
+        lv_obj_set_style_text_color(label, UI_COL_DIM, 0);
+    }
+
+    /* Third line: the state of the reading, quiet until it is not. */
+    bottom = Display_CreateBox(card);
+    lv_obj_set_width(bottom, LV_PCT(100));
+    lv_obj_set_height(bottom, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(bottom, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(bottom, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_hor(badge, 8, 0);
-    lv_obj_set_style_pad_ver(badge, 2, 0);
-    lv_obj_set_style_radius(badge, 10, 0);
-    lv_obj_set_style_bg_color(badge, DISPLAY_COL_WARN, 0);
-    lv_obj_set_style_border_width(badge, 0, 0);
-    lv_obj_set_scrollable(badge, false);
 
-    state = lv_label_create(badge);
-    lv_label_set_text(state, "OFFLINE");
-    lv_obj_set_style_text_color(state, DISPLAY_COL_BG, 0);
-    lv_obj_set_style_text_font(state, &lv_font_montserrat_12, 0);
+    if (index == UI_CARD_SYSTEM)
+    {
+        s_sys_time = lv_label_create(bottom);
+        lv_label_set_text(s_sys_time, "--:--");
+        lv_obj_set_style_text_font(s_sys_time, UI_FONT_TINY, 0);
+        lv_obj_set_style_text_color(s_sys_time, UI_COL_DIM, 0);
 
-    *badge_out = badge;
-    *state_out = state;
+        label = lv_label_create(bottom);
+        lv_label_set_text(label, "SET");
+        lv_obj_set_style_text_font(label, UI_FONT_TINY, 0);
+        lv_obj_set_style_text_color(label, UI_COL_OK, 0);
+
+        s_sys_dot = s_card_dot[index];
+    }
+    else
+    {
+        s_card_state[index] = lv_label_create(bottom);
+        lv_label_set_text(s_card_state[index], "NO DATA");
+        lv_obj_set_style_text_font(s_card_state[index], UI_FONT_TINY, 0);
+        lv_obj_set_style_text_color(s_card_state[index], UI_COL_DIM, 0);
+    }
+
+    /* Every card is on the focus ring, so turning the knob walks the six of them
+       and a press acts on the one under the cursor: the five readings open their
+       own detail screen and ask the node for a fresh value on the way in, the
+       sixth opens the settings. */
+    lv_obj_set_clickable(card, true);
+    (void)lv_obj_add_event_cb(card, Display_OnAction, LV_EVENT_CLICKED,
+                              (void *)&s_card_ctx[index]);
+
+    /* The marker is the border the card always carries, widened and painted, with
+       the padding handed back so that no line of the card moves when the knob
+       arrives. There is no outline: one card, one line. */
+    lv_obj_set_style_border_width(card, (lv_coord_t)UI_FOCUS_LINE, LV_STATE_FOCUSED);
+    lv_obj_set_style_border_color(card, UI_COL_FOCUS, LV_STATE_FOCUSED);
+    lv_obj_set_style_pad_all(card, (lv_coord_t)(UI_CARD_PAD - (UI_FOCUS_LINE - 1)),
+                             LV_STATE_FOCUSED);
+    lv_obj_set_style_outline_width(card, 0, LV_STATE_FOCUSED);
+    lv_group_add_obj(s_group[UI_SCREEN_MAIN], card);
+
+    return card;
 }
-
 /**
- * @brief  Create one of the two value tiles of the dashboard.
- * @param  parent:    row the tile belongs to.
- * @param  caption:   name of the value.
- * @param  value_out: receives the label that carries the number.
- */
-static void Display_CreateTile(lv_obj_t *parent, const char *caption, lv_obj_t **value_out)
-{
-    lv_obj_t *tile = lv_obj_create(parent);
-    lv_obj_t *cap;
-
-    lv_obj_set_flex_grow(tile, 1);
-    lv_obj_set_height(tile, LV_PCT(100));
-    lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
-                          LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_all(tile, 4, 0);
-    lv_obj_set_style_radius(tile, 8, 0);
-    lv_obj_set_style_bg_color(tile, DISPLAY_COL_CARD, 0);
-    lv_obj_set_style_border_width(tile, 0, 0);
-    lv_obj_set_scrollable(tile, false);
-
-    cap = lv_label_create(tile);
-    lv_label_set_text(cap, caption);
-    lv_obj_set_style_text_color(cap, DISPLAY_COL_DIM, 0);
-    lv_obj_set_style_text_font(cap, &lv_font_montserrat_12, 0);
-
-    *value_out = lv_label_create(tile);
-    lv_label_set_text(*value_out, "--");
-    lv_obj_set_style_text_color(*value_out, DISPLAY_COL_ACCENT, 0);
-    lv_obj_set_style_text_font(*value_out, &lv_font_montserrat_20, 0);
-}
-
-/**
- * @brief  Create one row: caption on the left, value or hint on the right.
- * @param  parent:    column the row belongs to.
+ * @brief  Create one row of the settings or the link screen.
+ * @param  parent:    screen the row belongs to.
+ * @param  index:     zero based row number, it decides the pixel it sits on.
  * @param  caption:   text on the left.
  * @param  value_out: receives the right hand label, may be NULL.
  * @param  group:     focus group that should hold the row, NULL keeps it out.
- * @param  action:    context handed to the click handler, NULL for a row that
- *                    is only there to be read.
+ * @param  action:    context handed to the click handler, NULL for a row that is
+ *                    only there to be read.
+ * @retval the row.
  */
-static void Display_CreateRow(lv_obj_t *parent, const char *caption, lv_obj_t **value_out,
-                              lv_group_t *group, const uint8_t *action)
+static lv_obj_t *Display_BuildRow(lv_obj_t *parent, uint8_t index, const char *caption,
+                                  lv_obj_t **value_out, lv_group_t *group,
+                                  const uint8_t *action)
 {
     lv_obj_t *row = lv_obj_create(parent);
-    lv_obj_t *cap;
+    lv_obj_t *label;
 
-    lv_obj_set_size(row, LV_PCT(100), DISPLAY_ROW_HEIGHT);
+    lv_obj_set_size(row, (lv_coord_t)UI_GRID_W, (lv_coord_t)UI_ROW_H);
+    Display_PlaceRow(row, index);
+    lv_obj_set_style_radius(row, (lv_coord_t)UI_ROW_RADIUS, 0);
+    lv_obj_set_style_bg_color(row, UI_COL_CARD, 0);
+    lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(row, 1, 0);
+    lv_obj_set_style_border_color(row, UI_COL_LINE, 0);
+    lv_obj_set_style_pad_hor(row, (lv_coord_t)UI_ROW_PAD_H, 0);
+    lv_obj_set_style_pad_ver(row, 0, 0);
+    lv_obj_set_style_shadow_width(row, (lv_coord_t)UI_SHADOW_W, 0);
+    lv_obj_set_style_shadow_opa(row, (lv_opa_t)UI_SHADOW_OPA, 0);
+    lv_obj_set_style_shadow_color(row, UI_COL_SHADOW, 0);
+    lv_obj_set_style_shadow_offset_y(row, 1, 0);
+    lv_obj_set_scrollable(row, false);
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_hor(row, 8, 0);
-    lv_obj_set_style_pad_ver(row, 0, 0);
-    lv_obj_set_style_radius(row, 6, 0);
-    lv_obj_set_style_bg_color(row, DISPLAY_COL_CARD, 0);
-    lv_obj_set_style_border_width(row, 0, 0);
-    lv_obj_set_scrollable(row, false);
 
-    cap = lv_label_create(row);
-    lv_label_set_text(cap, caption);
-    lv_obj_set_style_text_color(cap, DISPLAY_COL_TEXT, 0);
-    lv_obj_set_style_text_font(cap, &lv_font_montserrat_14, 0);
+    label = lv_label_create(row);
+    lv_label_set_text(label, caption);
+    lv_obj_set_style_text_font(label, UI_FONT_BODY, 0);
+    lv_obj_set_style_text_color(label, UI_COL_TEXT, 0);
 
     if (value_out != NULL)
     {
         *value_out = lv_label_create(row);
         lv_label_set_text(*value_out, "");
-        lv_obj_set_style_text_color(*value_out, DISPLAY_COL_DIM, 0);
-        lv_obj_set_style_text_font(*value_out, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_font(*value_out, UI_FONT_BODY, 0);
+        lv_obj_set_style_text_color(*value_out, UI_COL_DIM, 0);
     }
 
     if ((group != NULL) && (action != NULL))
     {
         lv_obj_set_clickable(row, true);
         (void)lv_obj_add_event_cb(row, Display_OnAction, LV_EVENT_CLICKED, (void *)action);
-        lv_obj_set_style_bg_color(row, DISPLAY_COL_FOCUS, LV_STATE_FOCUSED);
-        lv_obj_set_style_outline_color(row, DISPLAY_COL_ACCENT, LV_STATE_FOCUSED);
-        lv_obj_set_style_outline_width(row, 2, LV_STATE_FOCUSED);
-        lv_obj_set_style_outline_pad(row, 0, LV_STATE_FOCUSED);
+
+        /* The very marker a card wears: the border widens into the row and the
+           horizontal padding gives the pixel back, so neither label slides when the
+           focus arrives. Vertically the content is centred, so losing one pixel at
+           the top and one at the bottom leaves its centre where it was. */
+        lv_obj_set_style_border_width(row, (lv_coord_t)UI_FOCUS_LINE, LV_STATE_FOCUSED);
+        lv_obj_set_style_border_color(row, UI_COL_FOCUS, LV_STATE_FOCUSED);
+        lv_obj_set_style_pad_hor(row, (lv_coord_t)(UI_ROW_PAD_H - (UI_FOCUS_LINE - 1)),
+                                 LV_STATE_FOCUSED);
+        lv_obj_set_style_outline_width(row, 0, LV_STATE_FOCUSED);
         lv_group_add_obj(group, row);
+    }
+
+    return row;
+}
+
+/**
+ * @brief  Main screen: the status bar and the six cards.
+ */
+static void Display_BuildMain(void)
+{
+    uint8_t index;
+
+    s_scr[UI_SCREEN_MAIN] = Display_CreateScreen();
+    s_group[UI_SCREEN_MAIN] = lv_group_create();
+    lv_group_set_wrap(s_group[UI_SCREEN_MAIN], true);
+    Display_BuildBar(UI_SCREEN_MAIN);
+
+    for (index = 0U; index < UI_CARD_COUNT; index++)
+    {
+        lv_obj_t *card = Display_BuildCard(index);
+
+        if (index == 0U)
+        {
+            s_first[UI_SCREEN_MAIN] = card;
+        }
     }
 }
 
 /**
- * @brief  Create the hint line at the bottom of a screen.
- * @param  parent: screen the line belongs to.
- * @retval the label, each screen needs its own.
+ * @brief  Settings screen: what the knob can change, and the way to the counters.
  */
-static lv_obj_t *Display_CreateFooter(lv_obj_t *parent)
+static void Display_BuildSettings(void)
 {
-    lv_obj_t *label = lv_label_create(parent);
+    s_scr[UI_SCREEN_SET] = Display_CreateScreen();
+    s_group[UI_SCREEN_SET] = lv_group_create();
+    lv_group_set_wrap(s_group[UI_SCREEN_SET], true);
+    Display_BuildBar(UI_SCREEN_SET);
 
-    lv_label_set_text(label, "");
-    lv_obj_set_style_text_color(label, DISPLAY_COL_DIM, 0);
-    lv_obj_set_style_text_font(label, &lv_font_montserrat_12, 0);
-    return label;
-}
-
-/**
- * @brief  Build the column that holds the rows of one screen.
- * @param  parent: screen the column belongs to.
- * @retval the column.
- */
-static lv_obj_t *Display_CreateRowList(lv_obj_t *parent)
-{
-    lv_obj_t *list = lv_obj_create(parent);
-
-    lv_obj_set_width(list, LV_PCT(100));
-    lv_obj_set_flex_grow(list, 1);
-    lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START,
-                          LV_FLEX_ALIGN_START);
-    lv_obj_set_style_pad_all(list, 0, 0);
-    lv_obj_set_style_pad_row(list, 4, 0);
-    lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(list, 0, 0);
-    lv_obj_set_scrollable(list, false);
-    return list;
-}
-
-/* ------------------------------------------------------------------
- * The two screens.
- * ------------------------------------------------------------------ */
-
-/**
- * @brief  Dashboard: the live values plus the four rows the knob acts on.
- */
-static void Display_BuildDashboard(void)
-{
-    lv_obj_t *cards;
-    lv_obj_t *list;
-
-    s_scr_dash = Display_CreateScreen();
-    s_group_dash = lv_group_create();
-    lv_group_set_wrap(s_group_dash, true);
-
-    Display_CreateHeader(s_scr_dash, "Bloomcare", &s_badge_dash, &s_state_dash);
-
-    cards = lv_obj_create(s_scr_dash);
-    lv_obj_set_size(cards, LV_PCT(100), 78);
-    lv_obj_set_flex_flow(cards, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(cards, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
-                          LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_all(cards, 0, 0);
-    lv_obj_set_style_pad_column(cards, 6, 0);
-    lv_obj_set_style_bg_opa(cards, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(cards, 0, 0);
-    lv_obj_set_scrollable(cards, false);
-    Display_CreateTile(cards, "TEMP", &s_lbl_temp);
-    Display_CreateTile(cards, "HUMI", &s_lbl_humi);
-
-    list = Display_CreateRowList(s_scr_dash);
-    Display_CreateRow(list, "Query now", NULL, s_group_dash, &s_action_query);
-    Display_CreateRow(list, "Buzzer", &s_lbl_buzzer, s_group_dash, &s_action_beep);
-    Display_CreateRow(list, "Period", &s_lbl_period, s_group_dash, &s_action_period);
-    Display_CreateRow(list, "Link stats", NULL, s_group_dash, &s_action_screen);
-
-    s_footer_dash = Display_CreateFooter(s_scr_dash);
+    s_first[UI_SCREEN_SET] = Display_BuildRow(s_scr[UI_SCREEN_SET], UI_SET_BRIGHT,
+                                              "Brightness", &s_set_value[UI_SET_BRIGHT],
+                                              s_group[UI_SCREEN_SET], &s_act_bright);
+    Display_BuildRow(s_scr[UI_SCREEN_SET], UI_SET_PERIOD, "Report",
+                     &s_set_value[UI_SET_PERIOD], s_group[UI_SCREEN_SET], &s_act_period);
+    Display_BuildRow(s_scr[UI_SCREEN_SET], UI_SET_BEEP, "Buzzer",
+                     &s_set_value[UI_SET_BEEP], s_group[UI_SCREEN_SET], &s_act_beep);
+    Display_BuildRow(s_scr[UI_SCREEN_SET], UI_SET_QUERY, "Read now", NULL,
+                     s_group[UI_SCREEN_SET], &s_act_query);
+    Display_BuildRow(s_scr[UI_SCREEN_SET], UI_SET_LINK, "Link stats", NULL,
+                     s_group[UI_SCREEN_SET], &s_act_link);
+    Display_BuildRow(s_scr[UI_SCREEN_SET], UI_SET_BACK, "Back", NULL,
+                     s_group[UI_SCREEN_SET], &s_act_main);
 }
 
 /**
@@ -492,57 +1146,151 @@ static void Display_BuildDashboard(void)
  */
 static void Display_BuildLink(void)
 {
-    lv_obj_t *list;
+    s_scr[UI_SCREEN_LINK] = Display_CreateScreen();
+    s_group[UI_SCREEN_LINK] = lv_group_create();
+    lv_group_set_wrap(s_group[UI_SCREEN_LINK], true);
+    Display_BuildBar(UI_SCREEN_LINK);
 
-    s_scr_link = Display_CreateScreen();
-    s_group_link = lv_group_create();
-    lv_group_set_wrap(s_group_link, true);
-
-    Display_CreateHeader(s_scr_link, "Link", &s_badge_link, &s_state_link);
-
-    list = Display_CreateRowList(s_scr_link);
-    Display_CreateRow(list, "Frames ok", &s_lbl_frames_ok, NULL, NULL);
-    Display_CreateRow(list, "Frames bad", &s_lbl_frames_bad, NULL, NULL);
-    Display_CreateRow(list, "TX ok", &s_lbl_tx_ok, NULL, NULL);
-    Display_CreateRow(list, "TX timeout", &s_lbl_tx_timeout, NULL, NULL);
-    Display_CreateRow(list, "Resends", &s_lbl_tx_resend, NULL, NULL);
-    Display_CreateRow(list, "Back", NULL, s_group_link, &s_action_screen);
-
-    s_footer_link = Display_CreateFooter(s_scr_link);
+    Display_BuildRow(s_scr[UI_SCREEN_LINK], UI_LINK_FRAME_OK, "Frames ok",
+                     &s_link_value[UI_LINK_FRAME_OK], NULL, NULL);
+    Display_BuildRow(s_scr[UI_SCREEN_LINK], UI_LINK_FRAME_BAD, "Frames bad",
+                     &s_link_value[UI_LINK_FRAME_BAD], NULL, NULL);
+    Display_BuildRow(s_scr[UI_SCREEN_LINK], UI_LINK_TX_OK, "TX ok",
+                     &s_link_value[UI_LINK_TX_OK], NULL, NULL);
+    Display_BuildRow(s_scr[UI_SCREEN_LINK], UI_LINK_TX_TIMEOUT, "TX timeout",
+                     &s_link_value[UI_LINK_TX_TIMEOUT], NULL, NULL);
+    Display_BuildRow(s_scr[UI_SCREEN_LINK], UI_LINK_RESEND, "Resends",
+                     &s_link_value[UI_LINK_RESEND], NULL, NULL);
+    s_first[UI_SCREEN_LINK] = Display_BuildRow(s_scr[UI_SCREEN_LINK], UI_LINK_BACK,
+                                               "Back", NULL, s_group[UI_SCREEN_LINK],
+                                               &s_act_main);
 }
 
+/**
+ * @brief  Detail screen: one reading, its extremes and its two thresholds.
+ * @note   The three lines the knob cannot change are built first and are only ever
+ *         written by Display_UpdateDetail(). The two below them are the ones the
+ *         knob acts on: a press on one starts turning it instead of walking the
+ *         focus ring, and the way out is the same long press that leaves every
+ *         other screen.
+ */
+static void Display_BuildDetail(void)
+{
+    s_scr[UI_SCREEN_DET] = Display_CreateScreen();
+    s_group[UI_SCREEN_DET] = lv_group_create();
+    lv_group_set_wrap(s_group[UI_SCREEN_DET], true);
+    Display_BuildBar(UI_SCREEN_DET);
+
+    Display_BuildRow(s_scr[UI_SCREEN_DET], UI_DET_LIVE, "Live",
+                     &s_det_value[UI_DET_LIVE], NULL, NULL);
+    Display_BuildRow(s_scr[UI_SCREEN_DET], UI_DET_MIN, "Min",
+                     &s_det_value[UI_DET_MIN], NULL, NULL);
+    Display_BuildRow(s_scr[UI_SCREEN_DET], UI_DET_MAX, "Max",
+                     &s_det_value[UI_DET_MAX], NULL, NULL);
+
+    /* A reading is written in the colour of the text, a threshold is dim because
+       it is the one the knob can move. */
+    lv_obj_set_style_text_color(s_det_value[UI_DET_LIVE], UI_COL_TEXT, 0);
+    lv_obj_set_style_text_color(s_det_value[UI_DET_MIN], UI_COL_TEXT, 0);
+    lv_obj_set_style_text_color(s_det_value[UI_DET_MAX], UI_COL_TEXT, 0);
+
+    s_first[UI_SCREEN_DET] = Display_BuildRow(s_scr[UI_SCREEN_DET], UI_DET_LOW,
+                                             "Low limit", &s_det_value[UI_DET_LOW],
+                                             s_group[UI_SCREEN_DET], &s_act_det_low);
+    Display_BuildRow(s_scr[UI_SCREEN_DET], UI_DET_HIGH, "High limit",
+                     &s_det_value[UI_DET_HIGH], s_group[UI_SCREEN_DET],
+                     &s_act_det_high);
+    Display_BuildRow(s_scr[UI_SCREEN_DET], UI_DET_BACK, "Back", NULL,
+                     s_group[UI_SCREEN_DET], &s_act_det_back);
+}
 /* ------------------------------------------------------------------
  * Behaviour of the interface.
  * ------------------------------------------------------------------ */
 
 /**
- * @brief  Note what a click on one row asks for.
- * @note   Nothing is run here. The interface only sets the request, the main
- *         loop serves it, so a transaction can never stall the LVGL task.
- * @param  event: the click event of the row.
+ * @brief  Step the backlight to the next level.
+ * @note   Purely local: the LEDC duty is set and nothing waits for an answer, so
+ *         this runs right here instead of being handed to the main loop, and the
+ *         line that reports the new level is written right here as well.
+ */
+static void Display_NextBrightness(void)
+{
+    s_bright_index = (uint8_t)((s_bright_index + 1U) % UI_BRIGHT_COUNT);
+    (void)dev_lcd_backlight(s_bright[s_bright_index]);
+    LOGI("backlight -> %u%%", (unsigned)s_bright[s_bright_index]);
+    Display_UpdateSettings();
+}
+
+/**
+ * @brief  Note what a click asks for.
+ * @note   A transaction is never run here. The interface only sets the request,
+ *         the main loop serves it, so a transaction can never stall the LVGL task.
+ *         Opening a screen, turning the backlight and starting to turn a
+ *         threshold are local and happen right here.
+ * @param  event: the click event of the card or the row.
  */
 static void Display_OnAction(lv_event_t *event)
 {
     const uint8_t *action = (const uint8_t *)lv_event_get_user_data(event);
+    uint8_t code;
 
     if (action == NULL)
     {
         return;
     }
-    switch (*action)
+    code = *action;
+    if (code >= UI_ACT_CARD_BASE)
     {
-        case DISPLAY_ACTION_QUERY:
-            s_request = DISPLAY_REQ_QUERY;
+        /* A card of the main screen. */
+        uint8_t card = (uint8_t)(code - UI_ACT_CARD_BASE);
+
+        if (card == UI_CARD_SYSTEM)
+        {
+            Display_ShowScreen(UI_SCREEN_SET);
+        }
+        else if (s_cards[card].id != 0U)
+        {
+            /* The detail screen of that one card, and a fresh value asked for on
+               the way in so the screen and the card behind it agree. */
+            s_detail_card = card;
+            s_read_id = s_cards[card].id;
+            s_request = UI_REQ_READ;
+            Display_ShowScreen(UI_SCREEN_DET);
+            Display_UpdateDetail();
+        }
+        return;
+    }
+    switch (code)
+    {
+        case UI_ACT_SET:
+            Display_ShowScreen(UI_SCREEN_SET);
             break;
-        case DISPLAY_ACTION_BEEP:
-            s_request = DISPLAY_REQ_BEEP;
+        case UI_ACT_MAIN:
+            Display_ShowScreen(UI_SCREEN_MAIN);
             break;
-        case DISPLAY_ACTION_PERIOD:
-            s_request = DISPLAY_REQ_PERIOD;
+        case UI_ACT_LINK:
+            Display_ShowScreen(UI_SCREEN_LINK);
             break;
-        case DISPLAY_ACTION_SCREEN:
-            Display_ShowScreen((s_screen == DISPLAY_SCREEN_DASH) ? DISPLAY_SCREEN_LINK
-                                                                : DISPLAY_SCREEN_DASH);
+        case UI_ACT_DET_LOW:
+            Display_BeginEdit(0U);
+            break;
+        case UI_ACT_DET_HIGH:
+            Display_BeginEdit(1U);
+            break;
+        case UI_ACT_DET_BACK:
+            Display_ShowScreen(UI_SCREEN_MAIN);
+            break;
+        case UI_ACT_QUERY:
+            s_request = UI_REQ_QUERY;
+            break;
+        case UI_ACT_PERIOD:
+            s_request = UI_REQ_PERIOD;
+            break;
+        case UI_ACT_BEEP:
+            s_request = UI_REQ_BEEP;
+            break;
+        case UI_ACT_BRIGHT:
+            Display_NextBrightness();
             break;
         default:
             break;
@@ -550,48 +1298,210 @@ static void Display_OnAction(lv_event_t *event)
 }
 
 /**
- * @brief  Slide from one screen to the other and hand the knob over.
- * @param  screen: DISPLAY_SCREEN_xxx.
+ * @brief  Slide from one screen to the next and hand the knob over.
+ * @param  screen: UI_SCREEN_xxx.
  */
 static void Display_ShowScreen(uint8_t screen)
 {
-    if (screen == s_screen)
+    if ((screen >= UI_SCREEN_COUNT) || (screen == s_screen))
     {
         return;
     }
+
+    /* A message that owns the title of the screen we leave behind has to go
+       first, nobody would ever restore that title afterwards. */
+    if (s_shown_status != UI_STATUS_NONE)
+    {
+        Display_SetBarTitle(s_screen);
+        s_shown_status = UI_STATUS_NONE;
+    }
+
+    lv_screen_load_anim(s_scr[screen],
+                        (screen > s_screen) ? LV_SCREEN_LOAD_ANIM_MOVE_LEFT
+                                            : LV_SCREEN_LOAD_ANIM_MOVE_RIGHT,
+                        UI_ANIM_MS, 0, false);
     s_screen = screen;
-    if (screen == DISPLAY_SCREEN_LINK)
+
+    /* A turn of the knob that was moving a threshold never survives a change of
+       screen, and the title of the screen that comes up is written here: it is
+       the name of the card on the detail screen and the title of the bar
+       everywhere else. */
+    s_edit = 0U;
+    s_edit_steps = 0;
+    s_edit_click = 0U;
+    s_edit_back = 0U;
+    Display_SetBarTitle(screen);
+
+    if (s_indev != NULL)
     {
-        lv_screen_load_anim(s_scr_link, LV_SCREEN_LOAD_ANIM_MOVE_LEFT, DISPLAY_ANIM_MS, 0, false);
-        lv_indev_set_group(s_indev, s_group_link);
+        lv_indev_set_group(s_indev, s_group[screen]);
     }
-    else
+    if (s_first[screen] != NULL)
     {
-        lv_screen_load_anim(s_scr_dash, LV_SCREEN_LOAD_ANIM_MOVE_RIGHT, DISPLAY_ANIM_MS, 0, false);
-        lv_indev_set_group(s_indev, s_group_dash);
+        lv_group_focus_obj(s_first[screen]);
     }
-    if (s_shown_status == DISPLAY_STATUS_NONE)
+}
+
+/**
+ * @brief  One step back on the stack of screens.
+ * @note   The main screen is the bottom of the stack, so holding the knob there
+ *         does nothing.
+ */
+static void Display_Back(void)
+{
+    switch (s_screen)
     {
-        lv_label_set_text((screen == DISPLAY_SCREEN_LINK) ? s_footer_link : s_footer_dash,
-                          (screen == DISPLAY_SCREEN_LINK) ? DISPLAY_HINT_LINK
-                                                          : DISPLAY_HINT_DASH);
+        case UI_SCREEN_DET:
+            Display_ShowScreen(UI_SCREEN_MAIN);
+            break;
+        case UI_SCREEN_LINK:
+            Display_ShowScreen(UI_SCREEN_SET);
+            break;
+        case UI_SCREEN_SET:
+            Display_ShowScreen(UI_SCREEN_MAIN);
+            break;
+        default:
+            break;
+    }
+}
+
+/**
+ * @brief  Hand the knob a threshold of the card the detail screen shows.
+ * @note   From here on a detent moves the value instead of the focus ring, and the
+ *         title of the bar says so.
+ * @param  side: 0 for the low threshold, 1 for the high one.
+ */
+static void Display_BeginEdit(uint8_t side)
+{
+    s_edit = 1U;
+    s_edit_side = side;
+    s_edit_steps = 0;
+    s_edit_click = 0U;
+    s_edit_back = 0U;
+    Display_SetBarTitle(UI_SCREEN_DET);
+    Display_UpdateDetail();
+}
+
+/**
+ * @brief  Give the knob back to the focus ring.
+ */
+static void Display_EndEdit(void)
+{
+    s_edit = 0U;
+    s_edit_steps = 0;
+    s_edit_click = 0U;
+    s_edit_back = 0U;
+    if (s_screen == UI_SCREEN_DET)
+    {
+        Display_SetBarTitle(UI_SCREEN_DET);
+        Display_UpdateDetail();
+    }
+}
+
+/**
+ * @brief  Apply what the knob did while it was turning a threshold.
+ * @note   The detents are applied in one go, so a fast turn cannot outrun the
+ *         redraw. A press ends the turn and keeps the value, a hold ends it and
+ *         walks one screen back, which is the way out of every other screen too.
+ */
+static void Display_EditTick(void)
+{
+    ui_card_t *card;
+    ui_limit_t *limit;
+    int32_t value;
+
+    if (s_edit == 0U)
+    {
+        return;
+    }
+    if (s_edit_back != 0U)
+    {
+        s_edit_back = 0U;
+        Display_EndEdit();
+        Display_Back();
+        return;
+    }
+    if (s_edit_click != 0U)
+    {
+        s_edit_click = 0U;
+        Display_EndEdit();
+        return;
+    }
+    if ((s_edit_steps == 0) || (s_screen != UI_SCREEN_DET))
+    {
+        return;
+    }
+
+    card = &s_cards[s_detail_card];
+    limit = (s_edit_side == 0U) ? &card->low : &card->high;
+    value = limit->value + ((int32_t)s_edit_steps * limit->step);
+    s_edit_steps = 0;
+
+    /* The range of this threshold first, then the pair of them: a band is never
+       allowed to turn inside out, so the low threshold stops at the high one and
+       the high one at the low. */
+    if (value < limit->min)
+    {
+        value = limit->min;
+    }
+    if (value > limit->max)
+    {
+        value = limit->max;
+    }
+    if (s_edit_side == 0U)
+    {
+        if (value > card->high.value)
+        {
+            value = card->high.value;
+        }
+    }
+    else if (value < card->low.value)
+    {
+        value = card->low.value;
+    }
+
+    if (value != limit->value)
+    {
+        limit->value = value;
+        Display_UpdateDetail();
     }
 }
 
 /**
  * @brief  Read the knob once, the way LVGL asks for it.
- * @note   The turning is handed over as it comes, the switch is not. LVGL has
- *         no way of telling a click from a hold, so the device layer latches
- *         the decision and the tick injects the matching event afterwards.
+ * @note   The turning is handed over as it comes, the switch is not: LVGL cannot
+ *         tell a click from a hold, so the device layer latches the decision and
+ *         the tick injects the matching event afterwards.
  * @param  indev: the encoder device, unused.
  * @param  data:  what LVGL has to be told.
  */
 static void Display_EncoderRead(lv_indev_t *indev, lv_indev_data_t *data)
 {
     uint8_t events;
+    int steps;
 
     (void)indev;
     events = dev_encoder_poll();
+    steps = dev_encoder_take_steps();
+
+    if (s_edit != 0U)
+    {
+        /* A threshold is being turned: the detents belong to the value, the focus
+           ring stays where it is, and nothing at all is handed to LVGL. */
+        s_edit_steps = s_edit_steps + (int32_t)steps;
+        if ((events & DEV_ENC_EV_LONG) != 0U)
+        {
+            s_edit_back = 1U;
+        }
+        else if ((events & DEV_ENC_EV_SHORT) != 0U)
+        {
+            s_edit_click = 1U;
+        }
+        data->enc_diff = 0;
+        data->state = LV_INDEV_STATE_RELEASED;
+        return;
+    }
+
     if ((events & DEV_ENC_EV_LONG) != 0U)
     {
         s_back_pending = 1U;
@@ -601,7 +1511,7 @@ static void Display_EncoderRead(lv_indev_t *indev, lv_indev_data_t *data)
         s_click_pending = 1U;
     }
 
-    data->enc_diff = (int16_t)dev_encoder_take_steps();
+    data->enc_diff = (int16_t)steps;
     data->state = LV_INDEV_STATE_RELEASED;
 }
 
@@ -610,8 +1520,7 @@ static void Display_EncoderRead(lv_indev_t *indev, lv_indev_data_t *data)
  */
 static void Display_ActivateFocused(void)
 {
-    lv_group_t *group = (s_screen == DISPLAY_SCREEN_LINK) ? s_group_link : s_group_dash;
-    lv_obj_t *focused = lv_group_get_focused(group);
+    lv_obj_t *focused = lv_group_get_focused(s_group[s_screen]);
 
     if (focused != NULL)
     {
@@ -620,105 +1529,292 @@ static void Display_ActivateFocused(void)
 }
 
 /**
- * @brief  Draw the values of the node into the tiles and the state badge.
+ * @brief  Draw one state into the dot and the state line of a card.
+ * @note   A reading that is fine keeps a grey state line and only shows itself in
+ *         the colour of the dot. Only a reading out of its band paints the line,
+ *         which is what keeps the screen quiet.
+ * @param  index: UI_CARD_xxx.
+ * @param  level: UI_LEVEL_xxx.
+ * @param  high:  1 when the upper limit was crossed.
+ */
+static void Display_SetCardState(uint8_t index, uint8_t level, uint8_t high)
+{
+    lv_color_t color = Display_LevelColor(level);
+
+    lv_obj_set_style_bg_color(s_card_dot[index], color, 0);
+    Display_SetText(s_card_state[index], Display_LevelText(level, high));
+    lv_obj_set_style_text_color(s_card_state[index],
+                                (level == UI_LEVEL_OK) ? UI_COL_DIM : color, 0);
+}
+
+/**
+ * @brief  Draw the card the detail screen shows: value, extremes and thresholds.
+ * @note   The live line carries the colour of its state, so the detail screen
+ *         answers the same question as the card it came from, and the threshold
+ *         the knob is turning is the only line in the focus colour.
+ * @note   The extremes belong to the run of the gateway, not to this instant: a
+ *         node that went quiet does not erase what it already reported.
+ */
+static void Display_UpdateDetail(void)
+{
+    const ui_card_t *card = &s_cards[s_detail_card];
+    char text[UI_TEXT_LEN];
+    int32_t value = 0;
+    uint8_t level = UI_LEVEL_UNKNOWN;
+    uint8_t high = 0U;
+
+    if ((Task_Sensor_IsOnline() != 0U) && (Task_Sensor_Get(card->id, &value) != 0U))
+    {
+        Display_FormatWithUnit(text, sizeof(text), value, card);
+        level = Display_Judge(card, value, &high);
+        lv_obj_set_style_text_color(s_det_value[UI_DET_LIVE],
+                                    (level == UI_LEVEL_OK) ? UI_COL_TEXT
+                                                           : Display_LevelColor(level), 0);
+    }
+    else
+    {
+        lv_snprintf(text, sizeof(text), "--");
+        lv_obj_set_style_text_color(s_det_value[UI_DET_LIVE], UI_COL_DIM, 0);
+    }
+    (void)high;                 /* the colour already says low or high */
+    Display_SetText(s_det_value[UI_DET_LIVE], text);
+
+    if (s_card_seen[s_detail_card] != 0U)
+    {
+        Display_FormatWithUnit(text, sizeof(text), s_card_min[s_detail_card], card);
+        Display_SetText(s_det_value[UI_DET_MIN], text);
+        Display_FormatWithUnit(text, sizeof(text), s_card_max[s_detail_card], card);
+        Display_SetText(s_det_value[UI_DET_MAX], text);
+    }
+    else
+    {
+        Display_SetText(s_det_value[UI_DET_MIN], "--");
+        Display_SetText(s_det_value[UI_DET_MAX], "--");
+    }
+
+    Display_FormatWithUnit(text, sizeof(text), card->low.value, card);
+    Display_SetText(s_det_value[UI_DET_LOW], text);
+    lv_obj_set_style_text_color(s_det_value[UI_DET_LOW],
+                                ((s_edit != 0U) && (s_edit_side == 0U)) ? UI_COL_FOCUS
+                                                                       : UI_COL_DIM, 0);
+
+    Display_FormatWithUnit(text, sizeof(text), card->high.value, card);
+    Display_SetText(s_det_value[UI_DET_HIGH], text);
+    lv_obj_set_style_text_color(s_det_value[UI_DET_HIGH],
+                                ((s_edit != 0U) && (s_edit_side == 1U)) ? UI_COL_FOCUS
+                                                                       : UI_COL_DIM, 0);
+}
+
+/**
+ * @brief  Draw one reading into its card.
+ * @param  index:  UI_CARD_xxx, always a card with a reading.
+ * @param  online: 1 while the node is reporting.
+ * @retval 1 when the card carries a reading, 0 when it has nothing to show.
+ * @note   A reading that came in is also what the extremes of the detail screen are
+ *         taken from, which is why they are noted here and not there.
+ */
+static uint8_t Display_UpdateCard(uint8_t index, uint8_t online)
+{
+    const ui_card_t *desc = &s_cards[index];
+    char text[UI_TEXT_LEN];
+    int32_t value = 0;
+    uint8_t level;
+    uint8_t high = 0U;
+
+    /* A node that went quiet makes its last values stale rather than wrong, so
+       they are dropped instead of being shown as if they were live. */
+    if ((online == 0U) || (desc->id == 0U) || (Task_Sensor_Get(desc->id, &value) == 0U))
+    {
+        Display_SetText(s_card_value[index], "--");
+        Display_SetCardState(index, UI_LEVEL_UNKNOWN, 0U);
+        return 0U;
+    }
+
+    Display_FormatValue(text, sizeof(text), value, desc->decimals);
+    if (strcmp(lv_label_get_text(s_card_value[index]), text) != 0)
+    {
+        lv_label_set_text(s_card_value[index], text);
+        Display_Pulse(s_card_value[index]);
+    }
+
+    /* The highest and the lowest the reading ever was, which is what the detail
+       screen reports. The first value seen opens both ends of the range. */
+    if (s_card_seen[index] == 0U)
+    {
+        s_card_seen[index] = 1U;
+        s_card_min[index] = value;
+        s_card_max[index] = value;
+    }
+    else
+    {
+        if (value < s_card_min[index])
+        {
+            s_card_min[index] = value;
+        }
+        if (value > s_card_max[index])
+        {
+            s_card_max[index] = value;
+        }
+    }
+
+    level = Display_Judge(desc, value, &high);
+    Display_SetCardState(index, level, high);
+    if (level > s_worst_level)
+    {
+        s_worst_level = level;
+    }
+    return 1U;
+}
+
+/**
+ * @brief  Draw the sixth card: the clock of the gateway and the way into settings.
+ */
+static void Display_UpdateSystemCard(void)
+{
+    char text[UI_TEXT_LEN];
+
+    Display_FormatDate(text, sizeof(text));
+    Display_SetText(s_sys_date, text);
+    Display_FormatClock(text, sizeof(text));
+    Display_SetText(s_sys_time, text);
+    lv_obj_set_style_bg_color(s_sys_dot, Display_LevelColor(s_worst_level), 0);
+}
+
+/**
+ * @brief  Draw the readings of the node, the state colour and the status bars.
  */
 static void Display_Refresh(void)
 {
-    char text[DISPLAY_TEXT_LEN];
-    int32_t value;
-    uint8_t online;
+    char text[UI_TEXT_LEN];
+    uint8_t online = Task_Sensor_IsOnline();
+    uint8_t known = 0U;
+    uint8_t index;
+    uint8_t screen;
 
-    online = Task_Sensor_IsOnline();
-    Display_SetText(s_state_dash, (online != 0U) ? "ONLINE" : "OFFLINE");
-    Display_SetText(s_state_link, (online != 0U) ? "ONLINE" : "OFFLINE");
-    lv_obj_set_style_bg_color(s_badge_dash,
-                              (online != 0U) ? DISPLAY_COL_ACCENT : DISPLAY_COL_WARN, 0);
-    lv_obj_set_style_bg_color(s_badge_link,
-                              (online != 0U) ? DISPLAY_COL_ACCENT : DISPLAY_COL_WARN, 0);
-
-    if (Task_Sensor_Get(LINK_ID_TEMP, &value) != 0U)
+    s_worst_level = UI_LEVEL_UNKNOWN;
+    for (index = 0U; index < UI_CARD_SYSTEM; index++)
     {
-        Display_FormatScaled(text, sizeof(text), value, "C");
-        Display_SetText(s_lbl_temp, text);
-    }
-    else
-    {
-        Display_SetText(s_lbl_temp, "--");
+        known = (uint8_t)(known + Display_UpdateCard(index, online));
     }
 
-    if (Task_Sensor_Get(LINK_ID_HUMI, &value) != 0U)
+    /* One reading of six missing makes the whole screen worth a look, but it must
+       not pass for a healthy system: a green dot needs every card to answer. */
+    if ((online == 0U) || (known < UI_CARD_SYSTEM) || (s_worst_level == UI_LEVEL_UNKNOWN))
     {
-        Display_FormatScaled(text, sizeof(text), value, "%");
-        Display_SetText(s_lbl_humi, text);
-    }
-    else
-    {
-        Display_SetText(s_lbl_humi, "--");
+        s_worst_level = UI_LEVEL_UNKNOWN;
     }
 
-    if (s_screen != DISPLAY_SCREEN_LINK)
+    Display_UpdateSystemCard();
+
+    for (screen = 0U; screen < UI_SCREEN_COUNT; screen++)
+    {
+        Display_UpdateBar(screen);
+    }
+
+    if (s_screen == UI_SCREEN_DET)
+    {
+        Display_UpdateDetail();
+        return;
+    }
+    if (s_screen != UI_SCREEN_LINK)
     {
         return;
     }
 
-    /* The counters of the link are the counters of the device layer, this is
-       the one screen that shows them. */
+    /* The counters belong to the device layer, this is the one screen that shows
+       them, so they are read here instead of being cached. */
     dev_stm32_stats_t stats;
+
     dev_stm32_get_stats(&stats);
     lv_snprintf(text, sizeof(text), "%d", (int)stats.frame_ok);
-    Display_SetText(s_lbl_frames_ok, text);
+    Display_SetText(s_link_value[UI_LINK_FRAME_OK], text);
     lv_snprintf(text, sizeof(text), "%d", (int)stats.frame_bad);
-    Display_SetText(s_lbl_frames_bad, text);
+    Display_SetText(s_link_value[UI_LINK_FRAME_BAD], text);
     lv_snprintf(text, sizeof(text), "%d", (int)stats.tx_ok);
-    Display_SetText(s_lbl_tx_ok, text);
+    Display_SetText(s_link_value[UI_LINK_TX_OK], text);
     lv_snprintf(text, sizeof(text), "%d", (int)stats.tx_timeout);
-    Display_SetText(s_lbl_tx_timeout, text);
+    Display_SetText(s_link_value[UI_LINK_TX_TIMEOUT], text);
     lv_snprintf(text, sizeof(text), "%d", (int)stats.tx_resend);
-    Display_SetText(s_lbl_tx_resend, text);
+    Display_SetText(s_link_value[UI_LINK_RESEND], text);
 }
 
 /**
- * @brief  Draw the two rows the knob changes.
+ * @brief  Draw the three rows of the settings screen the interface owns itself.
  * @note   They carry what the interface last asked for, not what the node
- *          confirmed, so they are updated from the request side of the state.
+ *         confirmed, so they are updated from the request side of the state.
  */
 static void Display_UpdateSettings(void)
 {
-    char text[DISPLAY_TEXT_LEN];
+    char text[UI_TEXT_LEN];
 
-    Display_SetText(s_lbl_buzzer, (s_buzzer_on != 0U) ? "ON" : "OFF");
-    lv_snprintf(text, sizeof(text), "%d s", (int)(s_periods[s_period_index] / 1000U));
-    Display_SetText(s_lbl_period, text);
+    lv_snprintf(text, sizeof(text), "%u%%", (unsigned)s_bright[s_bright_index]);
+    Display_SetText(s_set_value[UI_SET_BRIGHT], text);
+
+    lv_snprintf(text, sizeof(text), "%u s", (unsigned)(s_periods[s_period_index] / 1000U));
+    Display_SetText(s_set_value[UI_SET_PERIOD], text);
+
+    Display_SetText(s_set_value[UI_SET_BEEP], (s_buzzer_on != 0U) ? "ON" : "OFF");
 }
 
 /**
- * @brief  Show the answer of the node, or the hint of the screen once it aged.
+ * @brief  Text of one answer of the main loop.
+ * @param  code: UI_STATUS_xxx.
+ * @retval the text, empty for UI_STATUS_NONE.
  */
-static void Display_UpdateFooter(void)
+static const char *Display_StatusText(uint8_t code)
 {
-    lv_obj_t *footer = (s_screen == DISPLAY_SCREEN_LINK) ? s_footer_link : s_footer_dash;
+    switch (code)
+    {
+        case UI_STATUS_QUERY_OK:
+            return "READ OK";
+        case UI_STATUS_QUERY_FAIL:
+            return "READ FAILED";
+        case UI_STATUS_PERIOD_OK:
+            return "REPORT SET";
+        case UI_STATUS_PERIOD_FAIL:
+            return "REPORT REJECTED";
+        case UI_STATUS_BEEP_OK:
+            return "BUZZER SET";
+        case UI_STATUS_BEEP_FAIL:
+            return "BUZZER REJECTED";
+        default:
+            return "";
+    }
+}
+
+/**
+ * @brief  Show the answer of the main loop in the title slot, then the title again.
+ * @note   The title slot is the one place that is free on every screen and the
+ *         one a message cannot collide with, so no toast is laid over the cards.
+ */
+static void Display_UpdateStatus(void)
+{
+    lv_obj_t *title = s_bar[s_screen].title;
+    uint8_t good;
 
     if (s_status_seq != s_shown_seq)
     {
         s_shown_seq = s_status_seq;
         s_shown_status = s_status;
-        lv_label_set_text(footer, Display_StatusText(s_shown_status));
-        lv_obj_set_style_text_color(footer,
-                                    (s_shown_status == DISPLAY_STATUS_NONE)
-                                        ? DISPLAY_COL_DIM
-                                        : DISPLAY_COL_ACCENT,
-                                    0);
-        s_status_until = lv_tick_get() + DISPLAY_STATUS_MS;
+        if (s_shown_status == UI_STATUS_NONE)
+        {
+            Display_SetBarTitle(s_screen);
+            return;
+        }
+        good = ((s_shown_status == UI_STATUS_QUERY_OK) ||
+                (s_shown_status == UI_STATUS_PERIOD_OK) ||
+                (s_shown_status == UI_STATUS_BEEP_OK)) ? 1U : 0U;
+        lv_label_set_text(title, Display_StatusText(s_shown_status));
+        lv_obj_set_style_text_color(title, (good != 0U) ? UI_COL_OK : UI_COL_ALARM, 0);
+        s_status_until = lv_tick_get() + UI_STATUS_MS;
         return;
     }
 
-    if ((s_shown_status != DISPLAY_STATUS_NONE) &&
+    if ((s_shown_status != UI_STATUS_NONE) &&
         ((int32_t)(lv_tick_get() - s_status_until) >= 0))
     {
-        s_shown_status = DISPLAY_STATUS_NONE;
-        lv_label_set_text(footer, (s_screen == DISPLAY_SCREEN_LINK) ? DISPLAY_HINT_LINK
-                                                                    : DISPLAY_HINT_DASH);
-        lv_obj_set_style_text_color(footer, DISPLAY_COL_DIM, 0);
+        s_shown_status = UI_STATUS_NONE;
+        Display_SetBarTitle(s_screen);
     }
 }
 
@@ -732,11 +1828,14 @@ static void Display_Tick(lv_timer_t *timer)
 
     (void)timer;
 
+    /* While a threshold is being turned the knob belongs to the value, so that is
+       settled first: those detents never reach the focus ring. */
+    Display_EditTick();
+
     if (s_back_pending != 0U)
     {
         s_back_pending = 0U;
-        Display_ShowScreen((s_screen == DISPLAY_SCREEN_DASH) ? DISPLAY_SCREEN_LINK
-                                                            : DISPLAY_SCREEN_DASH);
+        Display_Back();
     }
     if (s_click_pending != 0U)
     {
@@ -744,11 +1843,19 @@ static void Display_Tick(lv_timer_t *timer)
         Display_ActivateFocused();
     }
 
-    Display_UpdateSettings();
-    Display_UpdateFooter();
+    /* A setting the main loop moved has to reach its label from the LVGL task, and
+       from nowhere else, so the main loop only raises a flag and this writes the
+       label. */
+    if (s_set_dirty != 0U)
+    {
+        s_set_dirty = 0U;
+        Display_UpdateSettings();
+    }
+
+    Display_UpdateStatus();
 
     now = lv_tick_get();
-    if ((uint32_t)(now - s_last_refresh) < DISPLAY_REFRESH_MS)
+    if ((uint32_t)(now - s_last_refresh) < UI_REFRESH_MS)
     {
         return;
     }
@@ -761,18 +1868,33 @@ static void Display_Tick(lv_timer_t *timer)
  * ------------------------------------------------------------------ */
 
 /**
- * @brief  Ask the node for its values, without waiting for its next report.
+ * @brief  Read values off the node without waiting for its next report, and keep
+ *         what came back.
+ * @note   The device layer hands the answer of a QUERY back to the asker and
+ *         never to the event handler, so it is merged into the cache here.
+ *         Without that the card would only change on the next report the node
+ *         pushes on its own and a press would look like it did nothing.
+ * @param  id: item to read, 0 asks for every item the node has.
  */
-static void Display_RunQuery(void)
+static void Display_Read(uint8_t id)
 {
     dev_item_t items[LINK_QUERY_MAX_ITEMS];
     uint8_t got = 0U;
+    uint8_t i;
     esp_err_t err;
 
-    err = Task_Gateway_RequestValues(0U, items, (uint8_t)LINK_QUERY_MAX_ITEMS, &got);
-    s_status = (err == ESP_OK) ? DISPLAY_STATUS_QUERY_OK : DISPLAY_STATUS_QUERY_FAIL;
+    err = Task_Gateway_RequestValues(id, items, (uint8_t)LINK_QUERY_MAX_ITEMS, &got);
+    if (err == ESP_OK)
+    {
+        for (i = 0U; i < got; i++)
+        {
+            (void)Task_Sensor_Set(items[i].id, items[i].value);
+        }
+    }
+    s_status = (err == ESP_OK) ? UI_STATUS_QUERY_OK : UI_STATUS_QUERY_FAIL;
     s_status_seq++;
-    LOGI("display query -> %s, %u item(s)", esp_err_to_name(err), (unsigned)got);
+    LOGI("display read id %u -> %s, %u item(s)", (unsigned)id, esp_err_to_name(err),
+         (unsigned)got);
 }
 
 /**
@@ -781,15 +1903,16 @@ static void Display_RunQuery(void)
 static void Display_RunPeriod(void)
 {
     esp_err_t err;
-    uint8_t next = (uint8_t)((s_period_index + 1U) % DISPLAY_PERIOD_COUNT);
+    uint8_t next = (uint8_t)((s_period_index + 1U) % UI_PERIOD_COUNT);
 
     err = Task_Gateway_SetReportPeriod(s_periods[next]);
     if (err == ESP_OK)
     {
         s_period_index = next;
     }
-    s_status = (err == ESP_OK) ? DISPLAY_STATUS_PERIOD_OK : DISPLAY_STATUS_PERIOD_FAIL;
+    s_status = (err == ESP_OK) ? UI_STATUS_PERIOD_OK : UI_STATUS_PERIOD_FAIL;
     s_status_seq++;
+    s_set_dirty = 1U;              /* the label is written by the LVGL task */
     LOGI("display period -> %u ms: %s", (unsigned)s_periods[next], esp_err_to_name(err));
 }
 
@@ -806,9 +1929,27 @@ static void Display_RunBeep(void)
     {
         s_buzzer_on = wanted;
     }
-    s_status = (err == ESP_OK) ? DISPLAY_STATUS_BEEP_OK : DISPLAY_STATUS_BEEP_FAIL;
+    s_status = (err == ESP_OK) ? UI_STATUS_BEEP_OK : UI_STATUS_BEEP_FAIL;
     s_status_seq++;
+    s_set_dirty = 1U;              /* the label is written by the LVGL task */
     LOGI("display buzzer -> %s: %s", (wanted != 0U) ? "on" : "off", esp_err_to_name(err));
+}
+
+/* ------------------------------------------------------------------
+ * What the interface is told from outside.
+ * ------------------------------------------------------------------ */
+
+/**
+ * @brief  Tell the interface what the network link is doing.
+ * @param  state: one of TASK_DISPLAY_NET_xxx.
+ * @note   One byte, written by whoever owns the link and read by the LVGL
+ *         task. The status bars are redrawn on their own refresh, so there
+ *         is nothing to signal and nothing to lock: the worst case is one
+ *         stale bar for one refresh period.
+ */
+void Task_Display_SetNet(task_display_net_t state)
+{
+    s_net_state = (uint8_t)state;
 }
 
 /* ------------------------------------------------------------------
@@ -818,8 +1959,8 @@ static void Display_RunBeep(void)
 /**
  * @brief  Bring up the panel, the graphics library and the knob.
  * @note   Every step is allowed to fail on its own: without a panel there is
- *         nothing to serve, and without a knob the interface stays readable
- *         but cannot be operated. Neither failure blocks the rest of the boot.
+ *         nothing to serve, and without a knob the interface stays readable but
+ *         cannot be operated. Neither failure blocks the rest of the boot.
  */
 void Task_Display_Init(void)
 {
@@ -827,18 +1968,31 @@ void Task_Display_Init(void)
     lvgl_port_cfg_t port_cfg = ESP_LVGL_PORT_INIT_CONFIG();
     lvgl_port_display_cfg_t disp_cfg;
 
-    s_request = DISPLAY_REQ_NONE;
-    s_status = DISPLAY_STATUS_NONE;
+    s_request = UI_REQ_NONE;
+    s_status = UI_STATUS_NONE;
     s_status_seq = 0U;
-    s_screen = DISPLAY_SCREEN_DASH;
+    s_screen = UI_SCREEN_MAIN;
     s_click_pending = 0U;
     s_back_pending = 0U;
-    s_shown_status = DISPLAY_STATUS_NONE;
+    s_shown_status = UI_STATUS_NONE;
     s_shown_seq = 0U;
     s_period_index = 0U;
+    s_read_id = 0U;
+    s_bright_index = 1U;              /* what dev_lcd_init() leaves behind */
     s_buzzer_on = 0U;
+    s_worst_level = UI_LEVEL_UNKNOWN;
     s_last_refresh = 0U;
     s_status_until = 0U;
+    s_detail_card = 0U;
+    s_edit = 0U;
+    s_edit_side = 0U;
+    s_edit_click = 0U;
+    s_edit_back = 0U;
+    s_edit_steps = 0;
+    s_set_dirty = 0U;
+    memset(s_card_min, 0, sizeof(s_card_min));
+    memset(s_card_max, 0, sizeof(s_card_max));
+    memset(s_card_seen, 0, sizeof(s_card_seen));
 
     err = dev_lcd_init();
     if (err != ESP_OK)
@@ -847,10 +2001,10 @@ void Task_Display_Init(void)
         return;
     }
 
-    port_cfg.task_priority = DISPLAY_TASK_PRIORITY;
-    port_cfg.task_stack = DISPLAY_TASK_STACK;
-    port_cfg.task_max_sleep_ms = DISPLAY_TASK_SLEEP_MS;
-    port_cfg.timer_period_ms = DISPLAY_TICK_MS;
+    port_cfg.task_priority = UI_TASK_PRIORITY;
+    port_cfg.task_stack = UI_TASK_STACK;
+    port_cfg.task_max_sleep_ms = UI_TASK_SLEEP_MS;
+    port_cfg.timer_period_ms = UI_TASK_TICK_MS;
     err = lvgl_port_init(&port_cfg);
     if (err != ESP_OK)
     {
@@ -861,7 +2015,7 @@ void Task_Display_Init(void)
     memset(&disp_cfg, 0, sizeof(disp_cfg));
     disp_cfg.io_handle = dev_lcd_io();
     disp_cfg.panel_handle = dev_lcd_panel();
-    disp_cfg.buffer_size = DEV_LCD_H_RES * DISPLAY_BUF_LINES;
+    disp_cfg.buffer_size = DEV_LCD_H_RES * UI_BUF_LINES;
     disp_cfg.double_buffer = true;
     disp_cfg.hres = DEV_LCD_H_RES;
     disp_cfg.vres = DEV_LCD_V_RES;
@@ -882,11 +2036,11 @@ void Task_Display_Init(void)
         LOGE("the display refused to register with LVGL");
         return;
     }
-    Display_BuildDashboard();
+    Display_BuildMain();
+    Display_BuildSettings();
     Display_BuildLink();
-    lv_label_set_text(s_footer_dash, DISPLAY_HINT_DASH);
-    lv_label_set_text(s_footer_link, DISPLAY_HINT_LINK);
-    lv_screen_load(s_scr_dash);
+    Display_BuildDetail();
+    lv_screen_load(s_scr[UI_SCREEN_MAIN]);
     Display_UpdateSettings();
     Display_Refresh();
     lvgl_port_unlock();
@@ -907,8 +2061,12 @@ void Task_Display_Init(void)
     lv_indev_set_type(s_indev, LV_INDEV_TYPE_ENCODER);
     lv_indev_set_read_cb(s_indev, Display_EncoderRead);
     lv_indev_set_display(s_indev, s_disp);
-    lv_indev_set_group(s_indev, s_group_dash);
-    (void)lv_timer_create(Display_Tick, DISPLAY_TICK_PERIOD_MS, NULL);
+    lv_indev_set_group(s_indev, s_group[UI_SCREEN_MAIN]);
+    if (s_first[UI_SCREEN_MAIN] != NULL)
+    {
+        lv_group_focus_obj(s_first[UI_SCREEN_MAIN]);
+    }
+    (void)lv_timer_create(Display_Tick, UI_TICK_PERIOD_MS, NULL);
     lvgl_port_unlock();
 
     LOGI("interface up, %ux%u", (unsigned)DEV_LCD_H_RES, (unsigned)DEV_LCD_V_RES);
@@ -916,8 +2074,8 @@ void Task_Display_Init(void)
 
 /**
  * @brief  Serve the display task once, call it every pass of the main loop.
- * @note   Only the request the interface left behind is served here, which is
- *         what keeps a blocking transaction out of the LVGL task.
+ * @note   Only the request the interface left behind is served here, which is what
+ *         keeps a blocking transaction out of the LVGL task.
  * @param  now_ms: current millisecond tick, not needed by this task.
  */
 void Task_Display_Poll(uint32_t now_ms)
@@ -925,21 +2083,24 @@ void Task_Display_Poll(uint32_t now_ms)
     uint8_t request = s_request;
 
     (void)now_ms;
-    if (request == DISPLAY_REQ_NONE)
+    if (request == UI_REQ_NONE)
     {
         return;
     }
-    s_request = DISPLAY_REQ_NONE;
+    s_request = UI_REQ_NONE;
 
     switch (request)
     {
-        case DISPLAY_REQ_QUERY:
-            Display_RunQuery();
+        case UI_REQ_QUERY:
+            Display_Read(0U);
             break;
-        case DISPLAY_REQ_PERIOD:
+        case UI_REQ_READ:
+            Display_Read(s_read_id);
+            break;
+        case UI_REQ_PERIOD:
             Display_RunPeriod();
             break;
-        case DISPLAY_REQ_BEEP:
+        case UI_REQ_BEEP:
             Display_RunBeep();
             break;
         default:

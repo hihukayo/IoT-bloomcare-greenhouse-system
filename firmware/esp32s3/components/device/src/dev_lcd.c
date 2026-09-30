@@ -182,10 +182,11 @@ esp_err_t dev_lcd_init(void)
         return err;
     }
 
-    /* Step 5: reset, then the vendor table, then the picture. A module that
-       shows a negative picture wants the argument of invert_color flipped, one
-       that is shifted by a few pixels wants set_gap() with the offsets its data
-       sheet prints. */
+    /* Step 5: reset, then the vendor table, then the picture. The colour
+       polarity is DEV_LCD_INVERT_COLOR, see dev_lcd.h: a module whose picture
+       comes out as a negative wants that value flipped. A module that is
+       shifted by a few pixels wants set_gap() with the offsets its data sheet
+       prints. */
     err = esp_lcd_panel_reset(s_panel);
     if (err != ESP_OK)
     {
@@ -198,7 +199,7 @@ esp_err_t dev_lcd_init(void)
         LOGE("init: %s", esp_err_to_name(err));
         return err;
     }
-    err = esp_lcd_panel_invert_color(s_panel, true);
+    err = esp_lcd_panel_invert_color(s_panel, (DEV_LCD_INVERT_COLOR != 0));
     if (err != ESP_OK)
     {
         LOGE("invert: %s", esp_err_to_name(err));

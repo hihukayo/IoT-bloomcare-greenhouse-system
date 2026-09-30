@@ -24,11 +24,9 @@ static uint8_t ItemToChannel(uint8_t id)
 {
     switch (id)
     {
-        case LINK_ID_BEEP:
-            return DEV_CH_BEEP;
-        default:
-            return 0U;                /* channel 0 is unused, so this
-                                         never matches a driver     */
+        case LINK_ID_BEEP:    return DEV_CH_BEEP;
+			  /* channel 0 is unused, so this never matches a driver     */   
+        default:              return 0U;         
     }
 }
 
@@ -61,6 +59,7 @@ static uint8_t ControlExecItem(uint8_t id, int32_t value)
         printf("[CMD ] report period = %lu ms\r\n", (unsigned long)value);
         return LINK_OK;
     }
+		
     /* Everything else has to be an actuator. */
     ch = ItemToChannel(id);
     act = Dev_Manager_FindActuator(ch);
@@ -72,6 +71,7 @@ static uint8_t ControlExecItem(uint8_t id, int32_t value)
     {
         return LINK_NAK_EXEC_FAIL;
     }
+		
     printf("[CMD ] %s = %ld\r\n", act->name, (long)value);
     return LINK_OK;
 }
@@ -97,6 +97,7 @@ uint8_t Task_Control_OnCommand(uint8_t cmd, const uint8_t *payload, uint8_t len)
     {
         return LINK_NAK_BAD_PARAM;
     }
+		
     while ((uint16_t)(off + LINK_ITEM_LEN) <= (uint16_t)len)
     {
         value = (int32_t)((uint32_t)payload[off + 1U] |
@@ -110,5 +111,6 @@ uint8_t Task_Control_OnCommand(uint8_t cmd, const uint8_t *payload, uint8_t len)
         }
         off = (uint8_t)(off + LINK_ITEM_LEN);
     }
+		
     return ret;
 }

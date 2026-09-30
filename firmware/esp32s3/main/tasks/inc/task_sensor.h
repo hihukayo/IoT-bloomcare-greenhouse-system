@@ -48,6 +48,18 @@ void Task_Sensor_Poll(uint32_t now_ms);
 uint8_t Task_Sensor_Get(uint8_t id, int32_t *value);
 
 /**
+ * @brief  Store one value in the cache.
+ * @note   For the answer of a query: the device layer hands that answer back to
+ *         the asker and never to the event handler, so the cache would keep the
+ *         value of the last report without this call. A later report of the node
+ *         replaces the whole cache anyway, it stays the authoritative source.
+ * @param  id:    item ID, see LINK_ID_xxx.
+ * @param  value: value to store, scaled by 100 like the reported ones.
+ * @retval 1 when the value was stored, 0 when the cache is full.
+ */
+uint8_t Task_Sensor_Set(uint8_t id, int32_t value);
+
+/**
  * @brief  Copy every cached item.
  * @param  out: destination buffer.
  * @param  max: capacity of that buffer in items.

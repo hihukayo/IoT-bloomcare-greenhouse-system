@@ -62,6 +62,7 @@ static uint16_t Sen_Dht22_MeasureHigh(uint16_t steps)
         BSP_Delay_Us(1);
         used++;
     }
+		
     return used;
 }
 
@@ -195,6 +196,7 @@ uint8_t Sen_Dht22_Sample(Dev_Value_t *out, uint8_t max_values)
     out[0].value = temp_x100;
     out[1].ch = DEV_CH_HUMI;
     out[1].value = humi_x100;
+		
     return 2U;
 }
 

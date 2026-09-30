@@ -109,6 +109,7 @@ static uint8_t Link_SendFrame(uint8_t cmd, uint8_t seq, const uint8_t *payload, 
     {
         return LINK_RET_FAIL;
     }
+		
     s_tx_frame[0] = LINK_SOF0;
     s_tx_frame[1] = LINK_SOF1;
     s_tx_frame[LINK_OFF_VER] = LINK_VER;
@@ -116,17 +117,16 @@ static uint8_t Link_SendFrame(uint8_t cmd, uint8_t seq, const uint8_t *payload, 
     s_tx_frame[LINK_OFF_LEN] = payload_len;
     s_tx_frame[LINK_OFF_CMD] = cmd;
     s_tx_frame[LINK_OFF_SEQ] = seq;
+		
     if (payload_len > 0U)
     {
         memcpy(&s_tx_frame[LINK_OFF_PAYLOAD], payload, payload_len);
     }
-    crc = Link_Crc16(&s_tx_frame[LINK_OFF_VER],
-                     (uint16_t)((LINK_HDR_LEN - LINK_OFF_VER) + payload_len));
+    crc = Link_Crc16(&s_tx_frame[LINK_OFF_VER], (uint16_t)((LINK_HDR_LEN - LINK_OFF_VER) + payload_len));
     total = (uint16_t)(LINK_HDR_LEN + payload_len);
-    s_tx_frame[total] = (uint8_t)(crc & 0x00FFU);
-    total++;
-    s_tx_frame[total] = (uint8_t)((crc >> 8) & 0x00FFU);
-    total++;
+    s_tx_frame[total++] = (uint8_t)(crc & 0x00FFU);
+    s_tx_frame[total++] = (uint8_t)((crc >> 8) & 0x00FFU);
+		
     return (s_transport->tx(s_tx_frame, total) == 0U) ? LINK_RET_OK : LINK_RET_FAIL;
 }
 
@@ -151,25 +151,21 @@ static uint8_t Link_SendItems(uint8_t cmd, uint8_t seq, const Link_Item_t *items
     {
         return LINK_RET_FAIL;
     }
+		
     for (i = 0U; i < count; i++)
     {
-        s_item_payload[n] = items[i].id;
-        n++;
-        s_item_payload[n] = (uint8_t)((uint32_t)items[i].value & 0xFFU);
-        n++;
-        s_item_payload[n] = (uint8_t)(((uint32_t)items[i].value >> 8) & 0xFFU);
-        n++;
-        s_item_payload[n] = (uint8_t)(((uint32_t)items[i].value >> 16) & 0xFFU);
-        n++;
-        s_item_payload[n] = (uint8_t)(((uint32_t)items[i].value >> 24) & 0xFFU);
-        n++;
+        s_item_payload[n++] = items[i].id;
+        s_item_payload[n++] = (uint8_t)((uint32_t)items[i].value & 0xFFU);
+        s_item_payload[n++] = (uint8_t)(((uint32_t)items[i].value >> 8) & 0xFFU);
+        s_item_payload[n++] = (uint8_t)(((uint32_t)items[i].value >> 16) & 0xFFU);
+        s_item_payload[n++] = (uint8_t)(((uint32_t)items[i].value >> 24) & 0xFFU);
     }
+		
     return Link_SendFrame(cmd, seq, s_item_payload, n);
 }
 
 /**
  * @brief  Answer one command with ACK (reason == LINK_OK) or with NAK.
-
  * @param  seq:    sequence number of the command being answered.
  * @param  cmd:    command code being answered.
  * @param  reason: LINK_OK or a LINK_NAK_xxx code.
@@ -269,6 +265,7 @@ static void Link_OnFrame(const uint8_t *frame)
         {
             (void)Link_SendItems(LINK_CMD_REPORT, seq, s_query_items, got);
         }
+				
         break;
     }
 
@@ -284,7 +281,7 @@ static void Link_OnFrame(const uint8_t *frame)
         }
         break;
 
-    case LINK_CMD_NAK:
+    case LINK_CMD_NAK:		
         if ((s_tx_pend != 0U) && (seq == s_tx_pend_seq))
         {
             s_tx_pend = 0U;                       /* refused, SEQ released again */
@@ -324,6 +321,7 @@ static void Link_ParserRun(void)
                 break;
             }
         }
+				
         if (start == 0xFFFFU)
         {
             /* No header left, but keep the last byte, it may be a lone 0xAA. */
@@ -331,16 +329,20 @@ static void Link_ParserRun(void)
             s_asm_len = 1U;
             return;
         }
+				
         if (start > 0U)
         {
             memmove(s_asm_buf, &s_asm_buf[start], (size_t)(s_asm_len - start));
             s_asm_len = (uint16_t)(s_asm_len - start);
         }
+				
         if (s_asm_len < LINK_HDR_LEN)
         {
             return;                               /* header still incomplete */
         }
+				
         payload_len = s_asm_buf[LINK_OFF_LEN];
+				
         if (payload_len > LINK_MAX_PAYLOAD)
         {
 #ifdef LINK_DEBUG
@@ -350,16 +352,17 @@ static void Link_ParserRun(void)
             s_asm_len--;
             continue;                             /* resync on the next 0xAA 55 */
         }
+				
         total = (uint16_t)(LINK_HDR_LEN + payload_len + LINK_CRC_LEN);
         if (s_asm_len < total)
         {
             return;                               /* body still incomplete */
         }
-        crc_calc = Link_Crc16(&s_asm_buf[LINK_OFF_VER],
-                              (uint16_t)((LINK_HDR_LEN - LINK_OFF_VER) + payload_len));
-        crc_recv = (uint16_t)((uint16_t)s_asm_buf[total - 2U] |
-                              ((uint16_t)s_asm_buf[total - 1U] << 8));
-        if ((s_asm_buf[LINK_OFF_VER] != LINK_VER) || (crc_calc != crc_recv))
+				
+        crc_calc = Link_Crc16(&s_asm_buf[LINK_OFF_VER],(uint16_t)((LINK_HDR_LEN - LINK_OFF_VER) + payload_len));
+        crc_recv = (uint16_t)((uint16_t)s_asm_buf[total - 2U] | ((uint16_t)s_asm_buf[total - 1U] << 8));
+        
+				if ((s_asm_buf[LINK_OFF_VER] != LINK_VER) || (crc_calc != crc_recv))
         {
 #ifdef LINK_DEBUG
             g_link_frame_bad++;
@@ -372,6 +375,7 @@ static void Link_ParserRun(void)
 #endif
             Link_OnFrame(s_asm_buf);
         }
+				
         memmove(s_asm_buf, &s_asm_buf[total], (size_t)(s_asm_len - total));
         s_asm_len = (uint16_t)(s_asm_len - total);
     }
@@ -416,9 +420,11 @@ static void Link_TxTick(void)
 #endif
         return;
     }
+		
     /* Answer lost: mark the transaction as failed and release the SEQ. */
     s_tx_pend = 0U;
     s_tx_failed = 1U;
+		
 #ifdef LINK_DEBUG
     g_link_timeout_tx++;
 #endif
@@ -458,10 +464,12 @@ void Link_Poll(uint32_t now_ms)
     uint16_t n;
 
     s_now_ms = now_ms;
+	
     if ((s_transport == NULL) || (s_transport->rx_take == NULL) || (s_transport->idle_take == NULL))
     {
         return;
     }
+		
     if (s_transport->idle_take() != 0U)
     {
         /* The line just went idle, so a whole frame is waiting in the ring. */
@@ -470,6 +478,7 @@ void Link_Poll(uint32_t now_ms)
             Link_ParserFeed(chunk, n);
         }
     }
+		
     Link_TxTick();
 }
 
@@ -495,8 +504,7 @@ void Link_SetQueryHandler(Link_QueryHandler_t handler)
  */
 uint8_t Link_SendReport(const Link_Item_t *items, uint8_t count)
 {
-    /* A report is fire and forget: it takes the next free SEQ and waits for
-       no answer. */
+    /* A report is fire and forget: it takes the next free SEQ and waits for no answer. */
     return Link_SendItems(LINK_CMD_REPORT, s_tx_seq++, items, count);
 }
 
@@ -521,30 +529,37 @@ uint8_t Link_SendReliable(uint8_t cmd, const uint8_t *payload, uint8_t len)
     {
         return LINK_RET_BUSY;                     /* one transaction at a time */
     }
+		
     if (len > LINK_MAX_PAYLOAD)
     {
         return LINK_RET_FAIL;
     }
+		
     if ((len > 0U) && (payload == NULL))
     {
         return LINK_RET_FAIL;
     }
+		
     if (len > 0U)
     {
         memcpy(s_tx_pend_payload, payload, len);
     }
+		
     s_tx_pend_len = len;
     s_tx_pend_cmd = cmd;
     s_tx_pend_seq = s_tx_seq;
     s_tx_seq++;
     ret = Link_SendFrame(cmd, s_tx_pend_seq, s_tx_pend_payload, len);
+		
     if (ret != LINK_RET_OK)
     {
         return ret;                               /* nothing left the port */
     }
+		
     s_tx_retry = 0U;
     s_tx_deadline = s_now_ms + LINK_ACK_TIMEOUT_MS;
     s_tx_pend = 1U;
+		
     return LINK_RET_OK;
 }
 

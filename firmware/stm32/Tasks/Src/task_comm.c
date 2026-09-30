@@ -21,7 +21,7 @@
  * these four function pointers, so it never sees a HAL handle.
  * ------------------------------------------------------------------ */
 /** @brief  Open USART2 for the link: DMA ring buffer plus IDLE detection. */
-static void     LinkPort_RxStart(void)
+static void LinkPort_RxStart(void)
 {
     BSP_Uart2_Init();                          /* arm the DMA ring + IDLE */
 }
@@ -41,7 +41,7 @@ static uint16_t LinkPort_RxTake(uint8_t *dst, uint16_t max)
  * @brief  Tell whether the line went quiet, which ends one received frame.
  * @retval 1 when an IDLE event is pending, 0 otherwise.
  */
-static uint8_t  LinkPort_IdleTake(void)
+static uint8_t LinkPort_IdleTake(void)
 {
     return BSP_Uart2_IdleTake();
 }
@@ -52,7 +52,7 @@ static uint8_t  LinkPort_IdleTake(void)
  * @param  len:  number of bytes to send.
  * @retval 0 on success, 1 on failure.
  */
-static uint8_t  LinkPort_Tx(const uint8_t *data, uint16_t len)
+static uint8_t LinkPort_Tx(const uint8_t *data, uint16_t len)
 {
     return BSP_Uart2_Tx(data, len);
 }

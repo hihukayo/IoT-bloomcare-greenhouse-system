@@ -1,0 +1,20 @@
+# Partitions of the Bloomcare gateway, for the 16 MB of flash that the
+# ESP32-S3-WROOM-1 N16R8 carries.
+#
+# The stock single app table hands the application 1 MB, and the current image
+# already spends two thirds of it. The first two entries below sit exactly where
+# the stock table puts them, so a gateway that is already in the field keeps its
+# settings, and the rest of the chip is spent on the application and on a place
+# to keep things:
+#
+#   nvs        the settings of the gateway, and later its WiFi credentials
+#   phy_init   the RF calibration data, written on the very first boot
+#   factory    the application, four times the room it needs today
+#   storage    a littlefs volume for whatever has to survive a reboot: a log, a
+#              cached page, a certificate. Nothing mounts it yet
+#
+# Name,     Type, SubType,  Offset,   Size,     Flags
+nvs,        data, nvs,      0x9000,   0x6000,
+phy_init,   data, phy,      0xF000,   0x1000,
+factory,    app,  factory,  0x10000,  0x400000,
+storage,    data, littlefs, 0x410000, 0xBF0000,

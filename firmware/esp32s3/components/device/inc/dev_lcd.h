@@ -53,6 +53,11 @@
     modules accept 80MHz, raise it once the wiring is short and proven. */
 #define DEV_LCD_PCLK_HZ         40000000
 
+/** Colour polarity of the module.
+    A module whose picture comes out as a negative, a light page that shows up
+    dark and blue that shows up orange, wants this value flipped. It is the one
+    switch behind the whole look of the interface, nothing else has to know. */
+#define DEV_LCD_INVERT_COLOR    0
 /** Lines of the panel one DMA transfer covers. */
 #define DEV_LCD_BAND_LINES      32U
 

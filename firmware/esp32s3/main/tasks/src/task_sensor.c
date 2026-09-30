@@ -2,8 +2,11 @@
   ******************************************************************************
   * @file    task_sensor.c
   * @brief   Implementation of the sensor values task.
-  * @note    The node pushes its values, so the cache is filled from the event of the
-  *          device layer and the poll only watches the online state.
+  * @note    The node pushes its values, so the cache is filled from the event of
+  *          the device layer; a query merges its answer in through
+  *          Task_Sensor_Set(), and the poll only watches the online state.
+  *          Every writer runs in the main loop, the readers of the cache are
+  *          the display task and the phone link.
   ******************************************************************************
   */
 #include "task_sensor.h"
@@ -123,6 +126,37 @@ uint8_t Task_Sensor_Get(uint8_t id, int32_t *value)
         }
     }
     return 0U;
+}
+
+/**
+ * @brief  Store one value in the cache.
+ * @note   For the answer of a query: the device layer hands that answer back to the
+ *         asker and never to the event handler, so without this call the cache would
+ *         keep the value of the last report the node pushed on its own.
+ * @param  id:    item ID, see LINK_ID_xxx.
+ * @param  value: value to store, scaled by 100 like the reported ones.
+ * @retval 1 when the value was stored, 0 when the cache is full.
+ */
+uint8_t Task_Sensor_Set(uint8_t id, int32_t value)
+{
+    uint8_t i;
+
+    for (i = 0U; i < s_cache_count; i++)
+    {
+        if (s_cache[i].id == id)
+        {
+            s_cache[i].value = value;
+            return 1U;
+        }
+    }
+    if (s_cache_count >= (uint8_t)TASK_SENSOR_MAX_VALUES)
+    {
+        return 0U;
+    }
+    s_cache[s_cache_count].id = id;
+    s_cache[s_cache_count].value = value;
+    s_cache_count++;
+    return 1U;
 }
 
 /**

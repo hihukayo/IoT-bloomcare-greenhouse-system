@@ -55,6 +55,7 @@ static const Dev_Sensor_t *SensorNth(uint8_t nth)
         }
         seen++;
     }
+		
     return NULL;
 }
 
@@ -78,6 +79,7 @@ static const Dev_Actuator_t *ActuatorNth(uint8_t nth)
         }
         seen++;
     }
+		
     return NULL;
 }
 
@@ -101,6 +103,7 @@ uint8_t Dev_Manager_Init(void)
             }
         }
     }
+		
     for (i = 0U; i < ACTUATOR_SLOTS; i++)
     {
         if ((s_actuators[i] != NULL) && (s_actuators[i]->init != NULL))
@@ -112,6 +115,7 @@ uint8_t Dev_Manager_Init(void)
             }
         }
     }
+		
     return failed;
 }
 
@@ -131,6 +135,7 @@ uint8_t Dev_Manager_Collect(Dev_Value_t *out, uint8_t max_values)
     {
         return 0U;
     }
+		
     for (i = 0U; (i < SENSOR_SLOTS) && (used < max_values); i++)
     {
         if ((s_sensors[i] == NULL) || (s_sensors[i]->sample == NULL))
@@ -145,6 +150,7 @@ uint8_t Dev_Manager_Collect(Dev_Value_t *out, uint8_t max_values)
         }
         used = (uint8_t)(used + got);
     }
+		
     return used;
 }
 
@@ -163,6 +169,7 @@ uint8_t Dev_Manager_SensorCount(void)
             n++;
         }
     }
+		
     return n;
 }
 
@@ -189,6 +196,7 @@ uint8_t Dev_Manager_ActuatorCount(void)
             n++;
         }
     }
+		
     return n;
 }
 
@@ -215,6 +223,7 @@ const Dev_Actuator_t *Dev_Manager_FindActuator(uint8_t ch)
             return s_actuators[i];
         }
     }
+		
     return NULL;
 }
 
@@ -233,6 +242,7 @@ void Dev_Manager_List(void)
             printf("[DEV ]   [%u] %s\r\n", (unsigned)i, s_sensors[i]->name);
         }
     }
+		
     printf("[DEV ] %u actuator(s):\r\n", (unsigned)Dev_Manager_ActuatorCount());
     for (i = 0U; i < ACTUATOR_SLOTS; i++)
     {
