@@ -68,4 +68,53 @@ void Task_Net_Poll(uint32_t now_ms);
  */
 void Task_Net_Get(task_net_info_t *out);
 
+/* ------------------------------------------------------------------
+ * Looking for an access point.
+ *
+ * The WiFi screen of the panel asks for one sweep and shows what came
+ * back. The radio hands the list over sorted by signal, strongest
+ * first, so what does not fit in the buffer below is the weakest of
+ * what is around and not an arbitrary part of it.
+ * ------------------------------------------------------------------ */
+
+/** Room for the answer of one sweep. */
+#define TASK_NET_SCAN_MAX       10U
+
+/** One access point the radio found. */
+typedef struct
+{
+    char    ssid[TASK_NET_SSID_LEN];    /**< name of the access point           */
+    int8_t  rssi;                       /**< dBm, -40 is close, -90 is far away */
+    uint8_t locked;                     /**< 1 when it asks for a key           */
+} task_net_ap_t;
+
+/** State of the sweep the interface asked for. */
+#define TASK_NET_SCAN_IDLE      0U      /**< nothing asked for yet       */
+#define TASK_NET_SCAN_RUNNING   1U      /**< the radio is sweeping       */
+#define TASK_NET_SCAN_DONE      2U      /**< the results below are ready */
+#define TASK_NET_SCAN_FAILED    3U      /**< the radio refused to sweep  */
+
+/**
+ * @brief  Ask for one sweep of the surrounding access points.
+ * @note   Returns at once: the radio sweeps in the background and raises
+ *         WIFI_EVENT_SCAN_DONE, which Task_Net_Poll() turns into results.
+ * @retval 1 when the sweep was started, 0 when the radio is not up, is still
+ *         joining an access point, or a sweep is already running.
+ */
+uint8_t Task_Net_ScanStart(void);
+
+/**
+ * @brief  State of the last sweep, TASK_NET_SCAN_xxx.
+ * @retval the state, TASK_NET_SCAN_IDLE before the first call to the starter.
+ */
+uint8_t Task_Net_ScanState(void);
+
+/**
+ * @brief  Copy what the last sweep found, strongest first.
+ * @param  out: destination buffer.
+ * @param  max: capacity of that buffer in entries.
+ * @retval number of entries copied, 0 when there is nothing to copy.
+ */
+uint8_t Task_Net_ScanResults(task_net_ap_t *out, uint8_t max);
+
 #endif /* __TASK_NET_H */

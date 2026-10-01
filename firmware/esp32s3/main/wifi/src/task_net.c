@@ -88,6 +88,16 @@ static char s_ssid[TASK_NET_SSID_LEN];
 static char s_pass[TASK_NET_PASS_LEN];
 static char s_ip[TASK_NET_IP_LEN];
 
+/* The sweep the panel asks for. The state is written by the event task and by
+   the main loop and read by the LVGL task; the list itself is written by the
+   main loop and read by the LVGL task, and the count is raised last, so a
+   reader either sees the previous list or the whole new one. */
+static volatile uint8_t s_scan_state;
+static volatile uint8_t s_scan_ready;               /* set by SCAN_DONE      */
+static volatile uint8_t s_scan_count;
+static task_net_ap_t    s_scan_aps[TASK_NET_SCAN_MAX];
+static wifi_ap_record_t s_scan_raw[TASK_NET_SCAN_MAX];
+
 /**
  * @brief  Name of one state, for the log only.
  * @param  state: TASK_NET_xxx.
@@ -219,6 +229,13 @@ static void Task_Net_OnWifi(void *arg, esp_event_base_t base, int32_t id, void *
     (void)arg;
     (void)base;
 
+    if (id == WIFI_EVENT_SCAN_DONE)
+    {
+        /* The list the driver allocated is collected by the main loop, so this
+           task stays short and never blocks on the driver. */
+        s_scan_ready = 1U;
+        return;
+    }
     if (id == WIFI_EVENT_STA_START)
     {
         s_want_connect = 1U;
@@ -301,6 +318,9 @@ void Task_Net_Init(void)
     s_sntp_started = 0U;
     s_try_at = 0U;
     s_rssi_at = 0U;
+    s_scan_state = TASK_NET_SCAN_IDLE;
+    s_scan_ready = 0U;
+    s_scan_count = 0U;
     s_ssid[0] = '\0';
     s_pass[0] = '\0';
     s_ip[0] = '\0';
@@ -327,8 +347,11 @@ void Task_Net_Init(void)
     s_configured = Task_Net_LoadCredentials();
     if (s_configured == 0U)
     {
-        LOGW("no network to join, fill in wifi_secrets.h");
-        return;
+        /* No network to join, but the radio still comes up: the panel has to be
+           able to look for one, which is exactly what its WiFi screen does.
+           Nothing connects until something writes credentials into the
+           settings area, which is the setup step still to come. */
+        LOGW("no network to join, the panel can look for one");
     }
 
     err = esp_netif_init();
@@ -366,9 +389,13 @@ void Task_Net_Init(void)
 
     memset(&sta_cfg, 0, sizeof(sta_cfg));
     /* The driver wants both credentials terminated inside their own field, and
-       those fields are one byte longer than the longest value accepted. */
-    memcpy(sta_cfg.sta.ssid, s_ssid, sizeof(sta_cfg.sta.ssid) - 1U);
-    memcpy(sta_cfg.sta.password, s_pass, sizeof(sta_cfg.sta.password) - 1U);
+       those fields are one byte longer than the longest value accepted. A
+       gateway without credentials keeps both fields empty and never joins. */
+    if (s_configured != 0U)
+    {
+        memcpy(sta_cfg.sta.ssid, s_ssid, sizeof(sta_cfg.sta.ssid) - 1U);
+        memcpy(sta_cfg.sta.password, s_pass, sizeof(sta_cfg.sta.password) - 1U);
+    }
     /* WPA2 is the floor: it admits WPA2, the mixed WPA2/WPA3 and WPA3, and keeps
        out the open and the WEP networks, which a gateway should not join. */
     sta_cfg.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
@@ -392,8 +419,44 @@ void Task_Net_Init(void)
        sleep between two beacons, and every answer would come late. */
     (void)esp_wifi_set_ps(WIFI_PS_NONE);
 
-    Task_Net_SetState(TASK_NET_CONNECTING);
-    LOGI("joining %s", s_ssid);
+    if (s_configured != 0U)
+    {
+        Task_Net_SetState(TASK_NET_CONNECTING);
+        LOGI("joining %s", s_ssid);
+    }
+}
+
+/**
+ * @brief  Collect what the radio found and hand the list to the interface.
+ * @note   Main loop only. The driver hands the list over sorted by signal, so
+ *         what does not fit in the buffer is the weakest around; the call frees
+ *         the whole list the driver allocated either way, so asking for less
+ *         than was found leaks nothing.
+ */
+static void Task_Net_ScanCollect(void)
+{
+    uint16_t num = (uint16_t)TASK_NET_SCAN_MAX;
+    uint8_t  n = 0U;
+    uint16_t i;
+
+    s_scan_count = 0U;
+    if (esp_wifi_scan_get_ap_records(&num, s_scan_raw) != ESP_OK)
+    {
+        s_scan_state = TASK_NET_SCAN_FAILED;
+        LOGW("the sweep results could not be read");
+        return;
+    }
+    for (i = 0U; (i < num) && (n < (uint8_t)TASK_NET_SCAN_MAX); i++)
+    {
+        Task_Net_Copy(s_scan_aps[n].ssid, sizeof(s_scan_aps[n].ssid),
+                      (const char *)s_scan_raw[i].ssid);
+        s_scan_aps[n].rssi = s_scan_raw[i].rssi;
+        s_scan_aps[n].locked = (s_scan_raw[i].authmode != WIFI_AUTH_OPEN) ? 1U : 0U;
+        n++;
+    }
+    s_scan_count = n;                 /* raised last, see the note on the list */
+    s_scan_state = TASK_NET_SCAN_DONE;
+    LOGI("sweep found %u network(s)", (unsigned)n);
 }
 
 /**
@@ -402,6 +465,12 @@ void Task_Net_Init(void)
  */
 void Task_Net_Poll(uint32_t now_ms)
 {
+    if (s_scan_ready != 0U)
+    {
+        s_scan_ready = 0U;
+        Task_Net_ScanCollect();
+    }
+
     if (s_configured == 0U)
     {
         return;
@@ -459,6 +528,70 @@ void Task_Net_Poll(uint32_t now_ms)
             s_rssi = 0;
         }
     }
+}
+
+/**
+ * @brief  Ask for one sweep of the surrounding access points.
+ * @retval 1 when the sweep was started, 0 otherwise.
+ */
+uint8_t Task_Net_ScanStart(void)
+{
+    wifi_scan_config_t cfg;
+    esp_err_t err;
+
+    if (s_scan_state == TASK_NET_SCAN_RUNNING)
+    {
+        return 0U;
+    }
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.show_hidden = false;
+
+    err = esp_wifi_scan_start(&cfg, false);        /* never blocks */
+    if (err != ESP_OK)
+    {
+        /* ESP_ERR_WIFI_STATE is the usual one here: the radio is busy joining
+           an access point and cannot sweep at the same time. */
+        s_scan_state = TASK_NET_SCAN_FAILED;
+        LOGW("the radio refused to sweep: %s", esp_err_to_name(err));
+        return 0U;
+    }
+    s_scan_state = TASK_NET_SCAN_RUNNING;
+    LOGI("sweep started");
+    return 1U;
+}
+
+/**
+ * @brief  State of the last sweep, TASK_NET_SCAN_xxx.
+ */
+uint8_t Task_Net_ScanState(void)
+{
+    return s_scan_state;
+}
+
+/**
+ * @brief  Copy what the last sweep found, strongest first.
+ * @param  out: destination buffer.
+ * @param  max: capacity of that buffer in entries.
+ * @retval number of entries copied, 0 when there is nothing to copy.
+ */
+uint8_t Task_Net_ScanResults(task_net_ap_t *out, uint8_t max)
+{
+    uint8_t n = s_scan_count;
+    uint8_t i;
+
+    if ((out == NULL) || (max == 0U))
+    {
+        return 0U;
+    }
+    if (n > max)
+    {
+        n = max;
+    }
+    for (i = 0U; i < n; i++)
+    {
+        out[i] = s_scan_aps[i];
+    }
+    return n;
 }
 
 /**
