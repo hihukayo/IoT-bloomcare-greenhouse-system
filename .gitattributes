@@ -1,0 +1,37 @@
+# 换行符约定。
+#
+# 仓库里一律存 LF，检出到工作区也一律 LF。有了这个文件，git 在比对之前会先把
+# 工作区的内容归一化，所以哪怕编辑器在 Windows 上写出 CRLF，`git status` 也不
+# 会冒出一堆假改动——之前那 58 个文件就是这么来的。
+#
+# 顺带一个好处：Linux 侧的构建（ESP-IDF 的 devcontainer）和 Windows 侧拿到的
+# 是同一份字节，不会再出现「同一个目录在 WSL 里和在资源管理器里不一样」。
+#
+# 需要 CRLF 的文件在这里逐条列出来，没列到的就是 LF。
+* text=auto eol=lf
+
+# Keil 和 STM32CubeMX 自己的文件：仓库里同样只存 LF，但检出成 CRLF，让这两个
+# Windows 工具看到它们习惯的样子。存 LF 是为了仓库内部只有一种形式，检出成
+# CRLF 只是因为写这些文件的是 Windows 工具、它们每次都按 CRLF 重写。
+firmware/stm32/BloomcareGreenhouse.ioc          text eol=crlf
+firmware/stm32/.mxproject                       text eol=crlf
+firmware/stm32/Core/**                          text eol=crlf
+firmware/stm32/MDK-ARM/startup_stm32f103xe.s    text eol=crlf
+*.uvprojx                                       text eol=crlf
+*.uvoptx                                        text eol=crlf
+
+# 二进制：不做任何换行转换。
+*.bin    binary
+*.hex    binary
+*.elf    binary
+*.axf    binary
+*.o      binary
+*.a      binary
+*.crf    binary
+*.dep    binary
+*.lib    binary
+*.pdf    binary
+*.png    binary
+*.jpg    binary
+*.ico    binary
+*.uvguix.* binary
