@@ -482,6 +482,10 @@ static volatile uint8_t s_net_state;
    setting is then written by the LVGL task, never by the main loop. */
 static volatile uint8_t s_set_dirty;
 
+/* The strip of each list screen, so the knob can be told where to put it by
+   arithmetic instead of leaving it to LVGL. */
+static lv_obj_t *s_list[UI_SCREEN_COUNT];
+
 /* Written and read by the LVGL task only. */
 static uint8_t  s_screen;
 static uint8_t  s_click_pending;
@@ -946,15 +950,14 @@ static void Display_MarkFocus(lv_obj_t *row, lv_coord_t pad)
 /**
  * @brief  Create the strip the rows of a list screen live in.
  * @note   The strip scrolls, so a screen may hold more rows than the panel can
- *         show at once. The knob walks the rows and LVGL scrolls the strip by
- *         itself to keep the focused one in sight, which is why nothing here
- *         has to know which row is on screen.
- * @param  scr: the screen the strip belongs to.
+ *         show at once. Where it has to be scrolled to is worked out by
+ *         Display_OnFocus(), which is why it is remembered here by screen.
+ * @param  screen: UI_SCREEN_xxx, the strip is filed under it.
  * @retval the strip.
  */
-static lv_obj_t *Display_CreateList(lv_obj_t *scr)
+static lv_obj_t *Display_CreateList(uint8_t screen)
 {
-    lv_obj_t *list = lv_obj_create(scr);
+    lv_obj_t *list = lv_obj_create(s_scr[screen]);
 
     lv_obj_set_size(list, (lv_coord_t)DEV_LCD_H_RES, (lv_coord_t)UI_LIST_H);
     lv_obj_set_pos(list, 0, (lv_coord_t)UI_GRID_Y);
@@ -972,7 +975,104 @@ static lv_obj_t *Display_CreateList(lv_obj_t *scr)
     lv_obj_set_style_radius(list, LV_RADIUS_CIRCLE, LV_PART_SCROLLBAR);
     lv_obj_set_style_bg_color(list, UI_COL_LINE, LV_PART_SCROLLBAR);
     lv_obj_set_style_bg_opa(list, LV_OPA_COVER, LV_PART_SCROLLBAR);
+
+    s_list[screen] = list;
     return list;
+}
+
+/**
+ * @brief  Put the strip where the row the knob just reached can be seen.
+ * @note   LVGL would do this by itself, but it does it with an animation whose
+ *         speed is a hundred and sixty pixels a second: a full screen of a list
+ *         takes the better part of two seconds, and every further step of the
+ *         knob throws that animation away and starts a new one from wherever it
+ *         had got to. Turn the knob at any ordinary speed and the list simply
+ *         never catches up, which is what "it will not scroll all the way"
+ *         looks like. So the strip is placed here, at once and by arithmetic:
+ *         the rows sit on a fixed pitch, the row goes into the middle of the
+ *         window wherever that fits, and the answer is clamped to the two ends
+ *         of the list.
+ * @param  group: the group the focus has just moved in.
+ */
+static void Display_OnFocus(lv_group_t *group)
+{
+    lv_obj_t *row = lv_group_get_focused(group);
+    lv_obj_t *list = NULL;
+    lv_area_t strip;
+    lv_area_t area;
+    uint32_t  count;
+    uint32_t  n;
+    int32_t   scroll;
+    int32_t   content = 0;
+    int32_t   end;
+    int32_t   want;
+    uint8_t   i;
+
+    if (row == NULL)
+    {
+        return;
+    }
+    /* The row that leaves a list screen hangs under the screen itself and is
+       always in sight, so there is nothing to scroll for it. */
+    for (i = 0U; i < (uint8_t)UI_SCREEN_COUNT; i++)
+    {
+        if ((s_list[i] != NULL) && (lv_obj_get_parent(row) == s_list[i]))
+        {
+            list = s_list[i];
+            break;
+        }
+    }
+    if (list == NULL)
+    {
+        return;
+    }
+
+    lv_obj_update_layout(list);
+    lv_obj_get_coords(list, &strip);
+    lv_obj_get_coords(row, &area);
+    scroll = lv_obj_get_scroll_y(list);
+
+    /* How tall the content is, and where this row starts in it. Both are read
+       from the coordinates LVGL already keeps, with the current scroll added
+       back so the answer does not depend on where the strip happens to sit at
+       this instant. A hidden row takes no room, which is what keeps the WiFi
+       list short when only a few networks are around. */
+    count = lv_obj_get_child_count(list);
+    for (n = 0U; n < count; n++)
+    {
+        lv_obj_t *child = lv_obj_get_child(list, n);
+        lv_area_t child_area;
+
+        if (lv_obj_is_hidden(child))
+        {
+            continue;
+        }
+        lv_obj_get_coords(child, &child_area);
+        if ((child_area.y2 - strip.y1 + scroll) > content)
+        {
+            content = child_area.y2 - strip.y1 + scroll;
+        }
+    }
+
+    end = content - (int32_t)UI_LIST_H;
+    if (end < 0)
+    {
+        end = 0;
+    }
+    want = (area.y1 - strip.y1 + scroll)
+           - (((int32_t)UI_LIST_H - (int32_t)UI_ROW_H) / 2);
+    if (want < 0)
+    {
+        want = 0;
+    }
+    if (want > end)
+    {
+        want = end;
+    }
+    if (want != scroll)
+    {
+        lv_obj_scroll_to_y(list, want, LV_ANIM_OFF);
+    }
 }
 
 /**
@@ -1310,11 +1410,6 @@ static lv_obj_t *Display_BuildRow(lv_obj_t *parent, uint8_t index, const char *c
         (void)lv_obj_add_event_cb(row, Display_OnAction, LV_EVENT_CLICKED, (void *)action);
 
         Display_MarkFocus(row, (lv_coord_t)UI_ROW_PAD_H);
-        /* LVGL brings a row into sight when it takes the focus, but only if the
-           row itself is marked for it: the flag is read from the object that
-           gets the focus, never from its parent. Without this the rows below
-           the visible part of the strip can never be reached. */
-        lv_obj_set_scroll_on_focus(row, true);
         lv_group_add_obj(group, row);
     }
 
@@ -1375,8 +1470,9 @@ static void Display_BuildSettings(void)
     s_scr[UI_SCREEN_SET] = Display_CreateScreen();
     s_group[UI_SCREEN_SET] = lv_group_create();
     lv_group_set_wrap(s_group[UI_SCREEN_SET], true);
+    lv_group_set_focus_cb(s_group[UI_SCREEN_SET], Display_OnFocus);
     Display_BuildBar(UI_SCREEN_SET);
-    list = Display_CreateList(s_scr[UI_SCREEN_SET]);
+    list = Display_CreateList(UI_SCREEN_SET);
 
     s_first[UI_SCREEN_SET] = Display_BuildRow(list, UI_SET_BRIGHT,
                                               "Brightness", &s_set_value[UI_SET_BRIGHT],
@@ -1407,8 +1503,9 @@ static void Display_BuildLink(void)
     s_scr[UI_SCREEN_LINK] = Display_CreateScreen();
     s_group[UI_SCREEN_LINK] = lv_group_create();
     lv_group_set_wrap(s_group[UI_SCREEN_LINK], true);
+    lv_group_set_focus_cb(s_group[UI_SCREEN_LINK], Display_OnFocus);
     Display_BuildBar(UI_SCREEN_LINK);
-    list = Display_CreateList(s_scr[UI_SCREEN_LINK]);
+    list = Display_CreateList(UI_SCREEN_LINK);
 
     Display_BuildRow(list, UI_LINK_FRAME_OK, "Frames ok",
                      &s_link_value[UI_LINK_FRAME_OK], NULL, NULL);
@@ -1440,8 +1537,9 @@ static void Display_BuildDetail(void)
     s_scr[UI_SCREEN_DET] = Display_CreateScreen();
     s_group[UI_SCREEN_DET] = lv_group_create();
     lv_group_set_wrap(s_group[UI_SCREEN_DET], true);
+    lv_group_set_focus_cb(s_group[UI_SCREEN_DET], Display_OnFocus);
     Display_BuildBar(UI_SCREEN_DET);
-    list = Display_CreateList(s_scr[UI_SCREEN_DET]);
+    list = Display_CreateList(UI_SCREEN_DET);
 
     Display_BuildRow(list, UI_DET_LIVE, "Live",
                      &s_det_value[UI_DET_LIVE], NULL, NULL);
@@ -1488,8 +1586,9 @@ static void Display_BuildWifi(void)
     s_scr[UI_SCREEN_WIFI] = Display_CreateScreen();
     s_group[UI_SCREEN_WIFI] = lv_group_create();
     lv_group_set_wrap(s_group[UI_SCREEN_WIFI], true);
+    lv_group_set_focus_cb(s_group[UI_SCREEN_WIFI], Display_OnFocus);
     Display_BuildBar(UI_SCREEN_WIFI);
-    list = Display_CreateList(s_scr[UI_SCREEN_WIFI]);
+    list = Display_CreateList(UI_SCREEN_WIFI);
 
     (void)Display_BuildRow(list, UI_WIFI_HEADER_ROW, "WiFi", &s_wifi_status,
                            NULL, NULL);
@@ -2422,8 +2521,9 @@ static void Display_BuildKey(void)
     s_scr[UI_SCREEN_KEY] = Display_CreateScreen();
     s_group[UI_SCREEN_KEY] = lv_group_create();
     lv_group_set_wrap(s_group[UI_SCREEN_KEY], true);
+    lv_group_set_focus_cb(s_group[UI_SCREEN_KEY], Display_OnFocus);
     Display_BuildBar(UI_SCREEN_KEY);
-    list = Display_CreateList(s_scr[UI_SCREEN_KEY]);
+    list = Display_CreateList(UI_SCREEN_KEY);
 
     Display_BuildRow(list, UI_KEY_NETWORK, "Network", &s_key_net, NULL, NULL);
     Display_BuildRow(list, UI_KEY_PASSWORD, "Password", &s_key_text, NULL, NULL);

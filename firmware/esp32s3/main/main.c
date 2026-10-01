@@ -53,8 +53,13 @@ void app_main(void)
     Task_Comm_Init();                     /* UART plus frame parser          */
     Task_Sensor_Init();                   /* subscribe to the values         */
     Task_Gateway_Init();                  /* outward actions                 */
-    Task_Display_Init();                  /* panel, LVGL and the knob        */
+    /* The radio comes up before the panel. Bringing it up costs a few hundred
+       milliseconds of calibration during which the main loop cannot serve the
+       interface, and that pause is invisible while the panel is still dark but
+       very visible once it is not. Nothing here touches the interface: the one
+       thing the network task tells it is a state byte it only stores. */
     Task_Net_Init();                      /* the radio, and the clock        */
+    Task_Display_Init();                  /* panel, LVGL and the knob        */
     while (1)
     {
         now = App_Millis();
