@@ -360,6 +360,18 @@ static ui_card_t s_cards[UI_CARD_COUNT] =
 /* One passphrase character set per entry, plus the names the Set row shows. */
 #define UI_KEYSET_COUNT         4U
 
+/* The last slots of the wheel are not characters but actions, drawn with the
+   symbol glyphs the Montserrat fonts already carry. Having them inside the line
+   is the whole point: typing, rubbing out, switching set and even joining all
+   happen without ever leaving the wheel. Only the cross hands the knob back to
+   the rows below, for whoever would rather use those. */
+#define UI_KEY_TOK_DEL          0U      /* rub out the last character */
+#define UI_KEY_TOK_CLR          1U      /* throw the whole thing away */
+#define UI_KEY_TOK_GO           2U      /* join with what is typed    */
+#define UI_KEY_TOK_SET          3U      /* next character set         */
+#define UI_KEY_TOK_EXIT         4U      /* give the knob back to the rows */
+#define UI_KEY_TOKENS           5U
+
 /* Backlight steps the knob cycles through, the first entry is what
    dev_lcd_init() leaves behind. */
 #define UI_BRIGHT_COUNT         5U
@@ -393,6 +405,13 @@ static const char *s_keysets[UI_KEYSET_COUNT] =
 static const char *s_keyset_names[UI_KEYSET_COUNT] =
 {
     "abc", "123", "ABC", "#$%"
+};
+
+/* The actions of the wheel, in the order they sit after the characters. */
+static const char *s_key_tokens[UI_KEY_TOKENS] =
+{
+    LV_SYMBOL_BACKSPACE, LV_SYMBOL_TRASH, LV_SYMBOL_OK,
+    LV_SYMBOL_REFRESH, LV_SYMBOL_CLOSE
 };
 
 /* Context of the ten network rows, indexed by slot. */
@@ -583,6 +602,7 @@ static void Display_KeyTick(void);
 static void Display_KeyClick(void);
 static void Display_KeyDelete(void);
 static void Display_KeyClear(void);
+static void Display_KeyNextSet(void);
 static void Display_BeginEdit(uint8_t side);
 static void Display_EndEdit(void);
 static void Display_EditTick(void);
@@ -1740,8 +1760,7 @@ static void Display_OnAction(lv_event_t *event)
             Display_KeyRefresh();
             break;
         case UI_ACT_KEY_SET:
-            s_key_set = (uint8_t)((s_key_set + 1U) % (uint8_t)UI_KEYSET_COUNT);
-            s_key_cursor = 0U;
+            Display_KeyNextSet();
             Display_KeyRefresh();
             break;
         case UI_ACT_KEY_DELETE:
@@ -2377,7 +2396,8 @@ static void Display_KeyPrepare(uint8_t slot)
 static void Display_KeyWheel(char *out, size_t len)
 {
     const char *set = s_keysets[s_key_set];
-    int32_t     total = (int32_t)strlen(set) + 1;
+    int32_t     set_len = (int32_t)strlen(set);
+    int32_t     total = set_len + (int32_t)UI_KEY_TOKENS;
     size_t      pos = 0U;
     int32_t     i;
 
@@ -2391,10 +2411,12 @@ static void Display_KeyWheel(char *out, size_t len)
         {
             at += total;
         }
-        if (at == (total - 1))
+        if (at >= set_len)
         {
-            written = lv_snprintf(&out[pos], len - pos, "%sOK%s ",
-                                  (i == 0) ? "[" : "", (i == 0) ? "]" : "");
+            written = lv_snprintf(&out[pos], len - pos, "%s%s%s ",
+                                  (i == 0) ? "[" : "",
+                                  s_key_tokens[at - set_len],
+                                  (i == 0) ? "]" : "");
         }
         else
         {
@@ -2491,6 +2513,17 @@ static void Display_KeyClear(void)
 }
 
 /**
+ * @brief  Move the wheel on to the next character set.
+ * @note   Shared by the Set row and by the wheel's own switch slot, so the two
+ *         can never drift apart.
+ */
+static void Display_KeyNextSet(void)
+{
+    s_key_set = (uint8_t)((s_key_set + 1U) % (uint8_t)UI_KEYSET_COUNT);
+    s_key_cursor = 0U;
+}
+
+/**
  * @brief  Apply the turns the knob made while the wheel owns it.
  * @note   The turns are applied in one go so a fast spin cannot outrun the
  *         redraw, the same way the thresholds of the detail screen are served.
@@ -2504,7 +2537,7 @@ static void Display_KeyTick(void)
     {
         return;
     }
-    total = (int32_t)strlen(s_keysets[s_key_set]) + 1;
+    total = (int32_t)strlen(s_keysets[s_key_set]) + (int32_t)UI_KEY_TOKENS;
     at = (int32_t)s_key_cursor + s_key_steps;
     while (at < 0)
     {
@@ -2524,18 +2557,38 @@ static void Display_KeyTick(void)
 static void Display_KeyClick(void)
 {
     const char *set = s_keysets[s_key_set];
-    int32_t     total = (int32_t)strlen(set) + 1;
+    int32_t     set_len = (int32_t)strlen(set);
 
-    if ((int32_t)s_key_cursor == (total - 1))
+    if ((int32_t)s_key_cursor >= set_len)
     {
-        s_key_wheel = 0U;
-        s_key_steps = 0;
-        Display_SetBarTitle(UI_SCREEN_KEY);
+        switch ((uint8_t)((int32_t)s_key_cursor - set_len))
+        {
+            case UI_KEY_TOK_DEL:
+                Display_KeyDelete();
+                break;
+            case UI_KEY_TOK_CLR:
+                Display_KeyClear();
+                break;
+            case UI_KEY_TOK_GO:
+                /* Joining does not throw the knob out: a passphrase that was
+                   refused is best corrected right where it was typed. */
+                s_request = UI_REQ_JOIN;
+                break;
+            case UI_KEY_TOK_SET:
+                Display_KeyNextSet();
+                break;
+            default:
+                /* The cross is the only slot that gives the knob back. */
+                s_key_wheel = 0U;
+                s_key_steps = 0;
+                Display_SetBarTitle(UI_SCREEN_KEY);
+                break;
+        }
+        Display_KeyRefresh();
+        return;
     }
-    else
-    {
-        Display_KeyAppend(set[s_key_cursor]);
-    }
+
+    Display_KeyAppend(set[s_key_cursor]);
     Display_KeyRefresh();
 }
 
