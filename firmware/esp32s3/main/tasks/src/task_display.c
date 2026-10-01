@@ -2625,6 +2625,12 @@ static void Display_BuildKey(void)
     lv_obj_set_width(s_key_text, (lv_coord_t)UI_KEY_TEXT_W);
     lv_label_set_long_mode(s_key_text, LV_LABEL_LONG_DOT);
 
+    /* The room these two are given is wider than what they usually carry, and a
+       label left aligned would sit in the middle of the row instead of against
+       its right edge the way every value without a width of its own does. */
+    lv_obj_set_style_text_align(s_key_net, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_set_style_text_align(s_key_text, LV_TEXT_ALIGN_RIGHT, 0);
+
     row = Display_BuildRow(list, UI_KEY_LETTER, "Letter", &s_key_wheel_lbl,
                            s_group[UI_SCREEN_KEY], &s_act_key_turn);
     /* The wheel is the only value of the interface that is longer than a word,
