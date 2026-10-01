@@ -456,6 +456,7 @@ static lv_obj_t     *s_key_net;
 static lv_obj_t     *s_key_text;
 static lv_obj_t     *s_key_wheel_lbl;
 static lv_obj_t     *s_key_set_lbl;
+static lv_obj_t     *s_key_delete_lbl;
 static char          s_key_ssid[TASK_NET_SSID_LEN];
 static char          s_key_pass[TASK_NET_PASS_LEN];
 static uint8_t       s_key_len;
@@ -1857,8 +1858,18 @@ static void Display_EncoderRead(lv_indev_t *indev, lv_indev_data_t *data)
     if ((s_screen == UI_SCREEN_KEY) && (s_key_wheel != 0U))
     {
         /* The wheel owns the knob: turns move the character and nothing is
-           handed to LVGL. */
+           handed to LVGL. The switch is still read here and not further down,
+           or the press would be dropped on the floor and the closing slot of
+           the wheel could never be reached. */
         s_key_steps = s_key_steps + (int32_t)steps;
+        if ((events & DEV_ENC_EV_LONG) != 0U)
+        {
+            s_back_pending = 1U;
+        }
+        else if ((events & DEV_ENC_EV_SHORT) != 0U)
+        {
+            s_click_pending = 1U;
+        }
         data->enc_diff = 0;
         data->state = LV_INDEV_STATE_RELEASED;
         return;
@@ -2399,12 +2410,19 @@ static void Display_BuildKey(void)
        so its row is the only one whose label is given a width of its own. */
     lv_obj_set_width(s_key_wheel_lbl, (lv_coord_t)UI_WHEEL_W);
     lv_label_set_long_mode(s_key_wheel_lbl, LV_LABEL_LONG_DOT);
+    /* The window is shorter than the room the row gives it, and a label left
+       aligned would sit in the middle of the row instead of against its right
+       edge like every other value of the interface. */
+    lv_obj_set_style_text_align(s_key_wheel_lbl, LV_TEXT_ALIGN_RIGHT, 0);
     s_first[UI_SCREEN_KEY] = row;
 
     Display_BuildRow(list, UI_KEY_SET, "Set", &s_key_set_lbl,
                      s_group[UI_SCREEN_KEY], &s_act_key_set);
-    Display_BuildRow(list, UI_KEY_DELETE, "Delete", NULL,
+    /* The row says what it does: one character, the same as holding the knob
+       down in the wheel, and not the whole field. */
+    Display_BuildRow(list, UI_KEY_DELETE, "Delete", &s_key_delete_lbl,
                      s_group[UI_SCREEN_KEY], &s_act_key_delete);
+    lv_label_set_text(s_key_delete_lbl, "1 char");
     Display_BuildRow(list, UI_KEY_CONNECT, "Connect", NULL,
                      s_group[UI_SCREEN_KEY], &s_act_key_connect);
 
@@ -2495,10 +2513,21 @@ static void Display_Tick(lv_timer_t *timer)
         s_back_pending = 0U;
         if ((s_screen == UI_SCREEN_KEY) && (s_key_wheel != 0U))
         {
-            /* Holding the knob in the wheel strikes the last character; the way
-               out of the wheel is its closing slot, not the hold. */
-            Display_KeyDelete();
-            Display_KeyRefresh();
+            /* Holding the knob in the wheel strikes the last character. Once
+               there is nothing left to strike it hands the knob back instead,
+               so the closing slot is not the only way out of the wheel. */
+            if (s_key_len > 0U)
+            {
+                Display_KeyDelete();
+                Display_KeyRefresh();
+            }
+            else
+            {
+                s_key_wheel = 0U;
+                s_key_steps = 0;
+                Display_SetBarTitle(UI_SCREEN_KEY);
+                Display_KeyRefresh();
+            }
         }
         else
         {
