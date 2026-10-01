@@ -1,0 +1,7 @@
+# 换行符归一化，纯 EOL 改动，不参与 blame。
+#
+# 本仓库已经配好 blame.ignoreRevsFile，直接 git blame 就会跳过它。
+# 也可以用命令行临时指定：
+#     git blame --ignore-revs-file .git-blame-ignore-revs <file>
+#
+2b7af9ca1cf00aa00fad7c553dfa015a91436205
