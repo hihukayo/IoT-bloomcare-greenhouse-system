@@ -116,9 +116,10 @@ static const char *TAG = "TASK_DISPLAY";    /* only used by the LOGx macros */
 #define UI_ROW_GAP              UI_GAP
 #define UI_ROW_STEP             (UI_ROW_H + UI_ROW_GAP)
 
-/* How much of the panel that strip covers: from under the status bar down to
-   the bottom margin. Six rows of UI_ROW_H fill it exactly. */
-#define UI_LIST_H               (DEV_LCD_V_RES - UI_GRID_Y - 7)
+/* How much of the panel the scrolling strip covers. The row that leaves a list
+   screen is pinned under the strip and not inside it, so the way out can never
+   be scrolled out of sight; what is left below that row is the bottom margin. */
+#define UI_LIST_H               (DEV_LCD_V_RES - UI_GRID_Y - UI_ROW_H - UI_ROW_GAP - 7)
 
 /* ------------------------------------------------------------------
  * Colours, one place so the look stays consistent. Light, natural, quiet: the
@@ -205,7 +206,6 @@ static const char *TAG = "TASK_DISPLAY";    /* only used by the LOGx macros */
 #define UI_ACT_DET_HIGH         9U
 #define UI_ACT_DET_BACK         10U
 #define UI_ACT_WIFI             11U
-#define UI_ACT_WIFI_SCAN        12U
 
 /* The six cards of the main screen carry their own index in the context instead
    of an action code, so one handler serves them and the rows of the list screens
@@ -288,14 +288,12 @@ static ui_card_t s_cards[UI_CARD_COUNT] =
 #define UI_SET_QUERY            3U
 #define UI_SET_WIFI             4U
 #define UI_SET_LINK             5U
-#define UI_SET_BACK             6U
 
 #define UI_LINK_FRAME_OK        0U
 #define UI_LINK_FRAME_BAD       1U
 #define UI_LINK_TX_OK           2U
 #define UI_LINK_TX_TIMEOUT      3U
 #define UI_LINK_RESEND          4U
-#define UI_LINK_BACK            5U
 
 /* Rows of the detail screen of one reading: what the card is worth right now,
    the extremes it reached since the gateway came up, and the two thresholds the
@@ -305,20 +303,19 @@ static ui_card_t s_cards[UI_CARD_COUNT] =
 #define UI_DET_MAX              2U
 #define UI_DET_LOW              3U
 #define UI_DET_HIGH             4U
-#define UI_DET_BACK             5U
 
-/* Rows of the WiFi screen: the one that asks for a sweep, the slots the sweep
-   fills, and the way back. A slot that carries no network is hidden, and LVGL
-   does not focus a hidden object, so the knob only walks the networks that are
-   really there and the group itself is never touched again. */
-#define UI_WIFI_SCAN_ROW        0U
+/* Rows of the WiFi screen: a header that only reports what the radio is doing,
+   then the slots the sweep fills. The header takes no focus, and a slot with no
+   network behind it is hidden; LVGL does not focus a hidden object, so the knob
+   only ever walks networks that are really there and the focus group is built
+   once and never touched again. */
+#define UI_WIFI_HEADER_ROW      0U
 #define UI_WIFI_AP_FIRST        1U
 #define UI_WIFI_SLOTS           10U
-#define UI_WIFI_BACK_ROW        (UI_WIFI_AP_FIRST + UI_WIFI_SLOTS)
-#define UI_WIFI_ROW_COUNT       (UI_WIFI_BACK_ROW + 1U)
+#define UI_WIFI_ROW_COUNT       (UI_WIFI_AP_FIRST + UI_WIFI_SLOTS)
 
 /* Room the name of an access point gets; the rest of the row is the signal. */
-#define UI_WIFI_NAME_W          130
+#define UI_WIFI_NAME_W          145
 
 /* Backlight steps the knob cycles through, the first entry is what
    dev_lcd_init() leaves behind. */
@@ -388,7 +385,7 @@ static lv_obj_t *s_det_value[UI_ROW_COUNT];
 
 /* The WiFi screen: the row that asks for a sweep with its right hand label, the
    slots the answer fills, and the way back. */
-static lv_obj_t     *s_wifi_row[UI_WIFI_ROW_COUNT];
+static lv_obj_t     *s_wifi_row[UI_WIFI_SLOTS];
 static lv_obj_t     *s_wifi_status;
 static lv_obj_t     *s_wifi_name[UI_WIFI_SLOTS];
 static lv_obj_t     *s_wifi_signal[UI_WIFI_SLOTS];
@@ -447,9 +444,8 @@ static const uint8_t s_act_det_low  = UI_ACT_DET_LOW;
 static const uint8_t s_act_det_high = UI_ACT_DET_HIGH;
 static const uint8_t s_act_det_back = UI_ACT_DET_BACK;
 
-/* The WiFi screen: the row that asks for a sweep. */
+/* The WiFi screen, reached from the settings screen. */
 static const uint8_t s_act_wifi     = UI_ACT_WIFI;
-static const uint8_t s_act_scan     = UI_ACT_WIFI_SCAN;
 
 /* Context of the six cards, indexed by UI_CARD_xxx: the first five ask the node for
    their own reading, the sixth opens the settings. */
@@ -870,9 +866,15 @@ static lv_obj_t *Display_CreateList(lv_obj_t *scr)
     lv_obj_set_style_radius(list, 0, 0);
     lv_obj_set_style_pad_all(list, 0, 0);
     lv_obj_set_scroll_dir(list, LV_DIR_VER);
-    lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
-    /* No elastic and no momentum: both only show on a touch panel, and this one
-       is driven by a knob that steps one row at a time. */
+    /* A bar that shows itself whenever the strip holds more than the panel can
+       show, which is how the interface says there is more below. No elastic and
+       no momentum: both only show on a touch panel, and this one is driven by a
+       knob that steps one row at a time. */
+    lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_style_width(list, 3, LV_PART_SCROLLBAR);
+    lv_obj_set_style_radius(list, LV_RADIUS_CIRCLE, LV_PART_SCROLLBAR);
+    lv_obj_set_style_bg_color(list, UI_COL_LINE, LV_PART_SCROLLBAR);
+    lv_obj_set_style_bg_opa(list, LV_OPA_COVER, LV_PART_SCROLLBAR);
     return list;
 }
 
@@ -1211,9 +1213,35 @@ static lv_obj_t *Display_BuildRow(lv_obj_t *parent, uint8_t index, const char *c
         (void)lv_obj_add_event_cb(row, Display_OnAction, LV_EVENT_CLICKED, (void *)action);
 
         Display_MarkFocus(row, (lv_coord_t)UI_ROW_PAD_H);
+        /* LVGL brings a row into sight when it takes the focus, but only if the
+           row itself is marked for it: the flag is read from the object that
+           gets the focus, never from its parent. Without this the rows below
+           the visible part of the strip can never be reached. */
+        lv_obj_set_scroll_on_focus(row, true);
         lv_group_add_obj(group, row);
     }
 
+    return row;
+}
+
+/**
+ * @brief  Build the row that leaves a list screen.
+ * @note   It is pinned under the strip instead of being put inside it, so it is
+ *         on screen however far the list has been scrolled: a way out must
+ *         never scroll away. That is also why the strip is one row shorter than
+ *         the panel would allow.
+ * @param  scr:    the screen the row belongs to.
+ * @param  group:  focus group that should hold the row.
+ * @param  action: context handed to the click handler.
+ * @retval the row.
+ */
+static lv_obj_t *Display_BuildBackRow(lv_obj_t *scr, lv_group_t *group,
+                                      const uint8_t *action)
+{
+    lv_obj_t *row = Display_BuildRow(scr, 0U, "Back", NULL, group, action);
+
+    lv_obj_set_pos(row, (lv_coord_t)UI_GRID_X,
+                   (lv_coord_t)(UI_GRID_Y + UI_LIST_H + UI_ROW_GAP));
     return row;
 }
 
@@ -1262,14 +1290,14 @@ static void Display_BuildSettings(void)
                      &s_set_value[UI_SET_BEEP], s_group[UI_SCREEN_SET], &s_act_beep);
     Display_BuildRow(list, UI_SET_QUERY, "Read now", NULL,
                      s_group[UI_SCREEN_SET], &s_act_query);
-    /* Seven rows do not fit the strip at once, so it scrolls; the knob walks
-       down to Back and LVGL brings it into sight by itself. */
     Display_BuildRow(list, UI_SET_WIFI, "WiFi", &s_set_value[UI_SET_WIFI],
                      s_group[UI_SCREEN_SET], &s_act_wifi);
     Display_BuildRow(list, UI_SET_LINK, "Link stats", NULL,
                      s_group[UI_SCREEN_SET], &s_act_link);
-    Display_BuildRow(list, UI_SET_BACK, "Back", NULL,
-                     s_group[UI_SCREEN_SET], &s_act_main);
+    /* Six rows do not fit the strip at once, so it scrolls; the seventh does not
+       go in at all, it is pinned below, where it is always on screen. */
+    (void)Display_BuildBackRow(s_scr[UI_SCREEN_SET], s_group[UI_SCREEN_SET],
+                               &s_act_main);
 }
 
 /**
@@ -1295,9 +1323,9 @@ static void Display_BuildLink(void)
                      &s_link_value[UI_LINK_TX_TIMEOUT], NULL, NULL);
     Display_BuildRow(list, UI_LINK_RESEND, "Resends",
                      &s_link_value[UI_LINK_RESEND], NULL, NULL);
-    s_first[UI_SCREEN_LINK] = Display_BuildRow(list, UI_LINK_BACK,
-                                               "Back", NULL, s_group[UI_SCREEN_LINK],
-                                               &s_act_main);
+    s_first[UI_SCREEN_LINK] = Display_BuildBackRow(s_scr[UI_SCREEN_LINK],
+                                                   s_group[UI_SCREEN_LINK],
+                                                   &s_act_main);
 }
 
 /**
@@ -1337,18 +1365,22 @@ static void Display_BuildDetail(void)
     Display_BuildRow(list, UI_DET_HIGH, "High limit",
                      &s_det_value[UI_DET_HIGH], s_group[UI_SCREEN_DET],
                      &s_act_det_high);
-    Display_BuildRow(list, UI_DET_BACK, "Back", NULL,
-                     s_group[UI_SCREEN_DET], &s_act_det_back);
+    (void)Display_BuildBackRow(s_scr[UI_SCREEN_DET], s_group[UI_SCREEN_DET],
+                               &s_act_det_back);
 }
 
 /**
  * @brief  WiFi screen: what the radio can see around the gateway.
- * @note   The first row asks for a sweep and a press on it starts one, which is
- *         also what happens on the way in. The slots below are filled by the
- *         answer; one that carries nothing stays hidden, and since LVGL does
- *         not focus a hidden object the knob walks the networks that are really
- *         there and nothing else. They join the group here, once, and the group
- *         is never touched again.
+ * @note   The sweep starts on the way in, like the one of a phone, so there is
+ *         no button for it; the header at the top only reports what the radio is
+ *         doing and takes no focus. The slots under it are filled by the answer,
+ *         one that carries nothing stays hidden, and since LVGL does not focus a
+ *         hidden object the knob walks the networks that are really there and
+ *         nothing else.
+ * @note   The name of an access point is whatever its owner typed, and plenty of
+ *         them carry Chinese. The built in Montserrat fonts have no CJK glyph at
+ *         all, so those names would come out blank; the row is drawn with the
+ *         Source Han Sans subset that is compiled in for exactly this.
  */
 static void Display_BuildWifi(void)
 {
@@ -1362,33 +1394,36 @@ static void Display_BuildWifi(void)
     Display_BuildBar(UI_SCREEN_WIFI);
     list = Display_CreateList(s_scr[UI_SCREEN_WIFI]);
 
-    s_wifi_row[UI_WIFI_SCAN_ROW] = Display_BuildRow(list, UI_WIFI_SCAN_ROW, "Scan",
-                                                    &s_wifi_status,
-                                                    s_group[UI_SCREEN_WIFI],
-                                                    &s_act_scan);
-    s_first[UI_SCREEN_WIFI] = s_wifi_row[UI_WIFI_SCAN_ROW];
+    (void)Display_BuildRow(list, UI_WIFI_HEADER_ROW, "WiFi", &s_wifi_status,
+                           NULL, NULL);
 
     for (i = 0U; i < (uint8_t)UI_WIFI_SLOTS; i++)
     {
         /* A slot is only there to be read, so it carries no action; the focus
-           marker and the group are handed to it by hand instead. */
+           marker, the scroll on focus and the group are handed to it by hand. */
         row = Display_BuildRow(list, (uint8_t)(UI_WIFI_AP_FIRST + i), "--",
                                &s_wifi_signal[i], s_group[UI_SCREEN_WIFI], NULL);
         Display_MarkFocus(row, (lv_coord_t)UI_ROW_PAD_H);
+        lv_obj_set_scroll_on_focus(row, true);
         lv_group_add_obj(s_group[UI_SCREEN_WIFI], row);
 
-        s_wifi_row[UI_WIFI_AP_FIRST + i] = row;
+        s_wifi_row[i] = row;
         s_wifi_name[i] = Display_RowCaption(row);
-        /* The driver allows 32 characters of name and the row has room for
-           about sixteen, so the rest is cut off with a dot. */
+        /* The driver allows 32 characters of name and the row has room for about
+           ten of them, so the rest is cut off with a dot. */
         lv_label_set_long_mode(s_wifi_name[i], LV_LABEL_LONG_DOT);
         lv_obj_set_width(s_wifi_name[i], (lv_coord_t)UI_WIFI_NAME_W);
+        lv_obj_set_style_text_font(s_wifi_name[i],
+                                   &lv_font_source_han_sans_sc_14_cjk, 0);
         lv_obj_set_hidden(row, true);
     }
 
-    s_wifi_row[UI_WIFI_BACK_ROW] = Display_BuildRow(list, UI_WIFI_BACK_ROW, "Back",
-                                                    NULL, s_group[UI_SCREEN_WIFI],
-                                                    &s_act_main);
+    /* Focus starts on the way out: on the way in the list is still empty, so
+       that is the only stop that is really there. One turn reaches the first
+       network as soon as the sweep lands. */
+    s_first[UI_SCREEN_WIFI] = Display_BuildBackRow(s_scr[UI_SCREEN_WIFI],
+                                                   s_group[UI_SCREEN_WIFI],
+                                                   &s_act_main);
 }
 /* ------------------------------------------------------------------
  * Behaviour of the interface.
@@ -1480,13 +1515,10 @@ static void Display_OnAction(lv_event_t *event)
             Display_NextBrightness();
             break;
         case UI_ACT_WIFI:
-            /* Open the screen and ask for a sweep on the way in, so what the
-               radio can see is there without a second press. */
+            /* Open the screen and sweep on the way in, the way a phone does it:
+               there is no button for it, a second visit sweeps again. */
             s_request = UI_REQ_SCAN;
             Display_ShowScreen(UI_SCREEN_WIFI);
-            break;
-        case UI_ACT_WIFI_SCAN:
-            s_request = UI_REQ_SCAN;
             break;
         default:
             break;
@@ -1978,11 +2010,11 @@ static const char *Display_ScanText(uint8_t state)
         case TASK_NET_SCAN_RUNNING:
             return "scanning ...";
         case TASK_NET_SCAN_FAILED:
-            return "failed";
+            return "scan failed";
         case TASK_NET_SCAN_DONE:
             return "done";
         default:
-            return "press to scan";
+            return "waiting";
     }
 }
 
@@ -2002,11 +2034,11 @@ static void Display_WifiFill(uint8_t count)
             Display_SetText(s_wifi_name[i], s_wifi_ap[i].ssid);
             lv_snprintf(text, sizeof(text), "%d dBm", (int)s_wifi_ap[i].rssi);
             Display_SetText(s_wifi_signal[i], text);
-            lv_obj_set_hidden(s_wifi_row[UI_WIFI_AP_FIRST + i], false);
+            lv_obj_set_hidden(s_wifi_row[i], false);
         }
         else
         {
-            lv_obj_set_hidden(s_wifi_row[UI_WIFI_AP_FIRST + i], true);
+            lv_obj_set_hidden(s_wifi_row[i], true);
         }
     }
     s_wifi_count = count;
@@ -2025,7 +2057,7 @@ static void Display_UpdateWifi(void)
 
     if (state == TASK_NET_SCAN_DONE)
     {
-        lv_snprintf(text, sizeof(text), "%u found", (unsigned)s_wifi_count);
+        lv_snprintf(text, sizeof(text), "%u networks", (unsigned)s_wifi_count);
     }
     else
     {

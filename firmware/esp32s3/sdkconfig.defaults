@@ -43,6 +43,11 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 # Fonts. Montserrat 14 is the built in default of LVGL and carries the body text
 # of the lists. 12 is used for the hints and the state badge, 16 for the titles
 # of the two screens and 20 for the two large readouts of the dashboard.
+# Chinese in the name of an access point. The Montserrat fonts carry no CJK
+# glyph at all, so a network called 客厅WiFi would show up blank without this.
+# It is a subset of about 1200 common characters, which is enough for a name.
+CONFIG_LV_FONT_SOURCE_HAN_SANS_SC_14_CJK=y
+
 CONFIG_LV_FONT_MONTSERRAT_12=y
 CONFIG_LV_FONT_MONTSERRAT_16=y
 CONFIG_LV_FONT_MONTSERRAT_20=y
