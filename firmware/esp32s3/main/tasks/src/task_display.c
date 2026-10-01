@@ -38,6 +38,7 @@
 #include "task_sensor.h"
 
 #include "esp_lvgl_port.h"
+#include "esp_system.h"
 #include "lvgl.h"
 
 #ifdef APP_DEBUG
@@ -1552,6 +1553,7 @@ static void Display_OnAction(lv_event_t *event)
     {
         /* A network of the WiFi screen: open its password screen. */
         Display_KeyPrepare((uint8_t)(code - UI_ACT_NET_BASE));
+        Display_KeyRefresh();
         Display_ShowScreen(UI_SCREEN_KEY);
         return;
     }
@@ -2743,12 +2745,19 @@ void Task_Display_Init(void)
         LOGE("the display refused to register with LVGL");
         return;
     }
+    /* The widgets come out of the heap now, so these two numbers are the whole
+       cost of the interface and what is left to run on. One line each: this is
+       the budget that every screen added from here on has to fit into. */
+    LOGI("building the interface, %u bytes of heap free",
+         (unsigned)esp_get_free_heap_size());
     Display_BuildMain();
     Display_BuildSettings();
     Display_BuildLink();
     Display_BuildDetail();
     Display_BuildWifi();
     Display_BuildKey();
+    LOGI("interface built, %u bytes of heap free",
+         (unsigned)esp_get_free_heap_size());
     lv_screen_load(s_scr[UI_SCREEN_MAIN]);
     Display_UpdateSettings();
     Display_Refresh();

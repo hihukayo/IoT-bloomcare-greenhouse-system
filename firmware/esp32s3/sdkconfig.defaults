@@ -52,10 +52,16 @@ CONFIG_LV_FONT_MONTSERRAT_12=y
 CONFIG_LV_FONT_MONTSERRAT_16=y
 CONFIG_LV_FONT_MONTSERRAT_20=y
 
-# The two draw buffers of the display task live in internal RAM and are handed
-# to the SPI driver, so dynamic memory of LVGL only holds the widgets. The pool
-# below is the default of LVGL, spelled out so a fresh clone cannot drift.
-CONFIG_LV_MEM_SIZE=65536
+# LVGL takes its widgets from the C library malloc and not from its own static
+# pool. That pool was 64 KB (LV_MEM_SIZE) and it ran out once the WiFi and the
+# password screen were added: an allocation that fails inside the draw path is
+# what a garbled panel looks like. Going through malloc frees those 64 KB of
+# internal RAM again and lets the widgets spill into the 8 MB of PSRAM, which is
+# what the note on the PSRAM above already promised.
+#
+# The two draw buffers of the display task stay in internal RAM either way: they
+# are handed to the SPI driver and carved out by esp_lvgl_port, not by LVGL.
+CONFIG_LV_USE_CLIB_MALLOC=y
 
 # Colour depth of a RGB565 panel, and the refresh period LVGL itself works on.
 # The display task redraws on its own schedule, this one only drives the timers.
