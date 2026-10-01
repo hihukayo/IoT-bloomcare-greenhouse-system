@@ -575,7 +575,9 @@ static const char *s_months[12] =
 };
 
 /**
- * @brief  Date as Mmm YYYY, or -- while the gateway has no time source.
+ * @brief  Date as Mmm DD YYYY, or -- while the gateway has no time source.
+ * @note   The day is zero padded so the line is exactly as wide on the first of
+ *         a month as on the thirty first, and the card never moves.
  * @param  out: destination buffer.
  * @param  len: size of that buffer.
  */
@@ -583,6 +585,7 @@ static void Display_FormatDate(char *out, size_t len)
 {
     struct tm broken;
     int32_t month;
+    int32_t day;
 
     if (Display_ReadClock(&broken) == 0U)
     {
@@ -594,7 +597,13 @@ static void Display_FormatDate(char *out, size_t len)
     {
         month = 0;
     }
-    lv_snprintf(out, len, "%s %d", s_months[month], (int)(broken.tm_year + 1900));
+    day = broken.tm_mday;
+    if ((day < 1) || (day > 31))
+    {
+        day = 1;
+    }
+    lv_snprintf(out, len, "%s %02d %d", s_months[month], (int)day,
+                (int)(broken.tm_year + 1900));
 }
 
 /**
@@ -980,7 +989,10 @@ static lv_obj_t *Display_BuildCard(uint8_t index)
     {
         s_sys_date = lv_label_create(mid);
         lv_label_set_text(s_sys_date, "--");
-        lv_obj_set_style_text_font(s_sys_date, UI_FONT_TITLE, 0);
+        /* One size below the value of the other five cards: "Oct 01 2026" needs
+           81.6 px in Montserrat 14 and 93.4 px in 16, and a card only has 93 px
+           inside its border and its padding. */
+        lv_obj_set_style_text_font(s_sys_date, UI_FONT_BODY, 0);
         lv_obj_set_style_text_color(s_sys_date, UI_COL_TEXT, 0);
     }
     else
