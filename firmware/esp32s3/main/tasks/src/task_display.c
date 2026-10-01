@@ -330,6 +330,16 @@ static ui_card_t s_cards[UI_CARD_COUNT] =
 /* Room the name of an access point gets; the rest of the row is the signal. */
 #define UI_WIFI_NAME_W          145
 
+/* Room the two rows of the password screen that carry what was picked or typed.
+   "Password" is the wider of the two captions, and a label with no width of its
+   own grows leftwards over it. */
+#define UI_KEY_TEXT_W           138
+
+/* How much of the passphrase the row shows. The end is the part being typed and
+   the part worth checking, so that is the part kept; the front is dropped and
+   marked with two dots. */
+#define UI_KEY_SHOW             14U
+
 /* Rows of the password screen. */
 #define UI_KEY_NETWORK          0U
 #define UI_KEY_PASSWORD         1U
@@ -519,6 +529,12 @@ static const uint8_t s_act_query  = UI_ACT_QUERY;
 static const uint8_t s_act_period = UI_ACT_PERIOD;
 static const uint8_t s_act_beep   = UI_ACT_BEEP;
 static const uint8_t s_act_bright = UI_ACT_BRIGHT;
+
+/* The way back to the settings screen, for the screens that screen opens: the
+   link counters and the WiFi list. Without it their Back row lands on the main
+   screen, one level too far, and disagrees with the hold, which walks back one
+   screen at a time. */
+static const uint8_t s_act_set    = UI_ACT_SET;
 
 /* The three rows of the detail screen the knob can act on. */
 static const uint8_t s_act_det_low  = UI_ACT_DET_LOW;
@@ -1519,7 +1535,7 @@ static void Display_BuildLink(void)
                      &s_link_value[UI_LINK_RESEND], NULL, NULL);
     s_first[UI_SCREEN_LINK] = Display_BuildBackRow(s_scr[UI_SCREEN_LINK],
                                                    s_group[UI_SCREEN_LINK],
-                                                   &s_act_main);
+                                                   &s_act_set);
 }
 
 /**
@@ -1616,7 +1632,7 @@ static void Display_BuildWifi(void)
        network as soon as the sweep lands. */
     s_first[UI_SCREEN_WIFI] = Display_BuildBackRow(s_scr[UI_SCREEN_WIFI],
                                                    s_group[UI_SCREEN_WIFI],
-                                                   &s_act_main);
+                                                   &s_act_set);
 }
 /* ------------------------------------------------------------------
  * Behaviour of the interface.
@@ -2404,9 +2420,27 @@ static void Display_KeyWheel(char *out, size_t len)
 static void Display_KeyRefresh(void)
 {
     char wheel[UI_WHEEL_LEN];
+    char shown[UI_KEY_SHOW + 4U];
 
     Display_SetText(s_key_net, s_key_ssid);
-    Display_SetText(s_key_text, (s_key_len > 0U) ? s_key_pass : "(empty)");
+
+    /* The end of a passphrase is the part just typed, so when it outgrows the
+       room the row has, the front is what goes. */
+    if (s_key_len == 0U)
+    {
+        lv_snprintf(shown, sizeof(shown), "(empty)");
+    }
+    else if (s_key_len > (uint8_t)UI_KEY_SHOW)
+    {
+        lv_snprintf(shown, sizeof(shown), "..%s",
+                    &s_key_pass[s_key_len - (uint8_t)UI_KEY_SHOW]);
+    }
+    else
+    {
+        lv_snprintf(shown, sizeof(shown), "%s", s_key_pass);
+    }
+    Display_SetText(s_key_text, shown);
+
     Display_SetText(s_key_set_lbl, s_keyset_names[s_key_set]);
     Display_KeyWheel(wheel, sizeof(wheel));
     Display_SetText(s_key_wheel_lbl, wheel);
@@ -2527,6 +2561,16 @@ static void Display_BuildKey(void)
 
     Display_BuildRow(list, UI_KEY_NETWORK, "Network", &s_key_net, NULL, NULL);
     Display_BuildRow(list, UI_KEY_PASSWORD, "Password", &s_key_text, NULL, NULL);
+
+    /* Both of these carry whatever the user picked or typed, so both get a width
+       of their own and cut off with a dot instead of running into the caption.
+       The name is drawn with the same CJK subset as the WiFi list, since it is
+       the same name. */
+    lv_obj_set_width(s_key_net, (lv_coord_t)UI_KEY_TEXT_W);
+    lv_label_set_long_mode(s_key_net, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_text_font(s_key_net, &lv_font_source_han_sans_sc_14_cjk, 0);
+    lv_obj_set_width(s_key_text, (lv_coord_t)UI_KEY_TEXT_W);
+    lv_label_set_long_mode(s_key_text, LV_LABEL_LONG_DOT);
 
     row = Display_BuildRow(list, UI_KEY_LETTER, "Letter", &s_key_wheel_lbl,
                            s_group[UI_SCREEN_KEY], &s_act_key_turn);
