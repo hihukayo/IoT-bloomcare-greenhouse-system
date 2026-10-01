@@ -163,12 +163,13 @@ static const char *TAG = "TASK_DISPLAY";    /* only used by the LOGx macros */
 /* ------------------------------------------------------------------
  * Screens, levels, requests and actions.
  * ------------------------------------------------------------------ */
-#define UI_SCREEN_COUNT         5U
+#define UI_SCREEN_COUNT         6U
 #define UI_SCREEN_MAIN          0U
 #define UI_SCREEN_SET           1U
 #define UI_SCREEN_LINK          2U
 #define UI_SCREEN_DET           3U
 #define UI_SCREEN_WIFI          4U
+#define UI_SCREEN_KEY           5U
 
 /* State of one reading, in this order from quiet to loud. */
 #define UI_LEVEL_UNKNOWN        0U
@@ -183,6 +184,7 @@ static const char *TAG = "TASK_DISPLAY";    /* only used by the LOGx macros */
 #define UI_REQ_BEEP             3U
 #define UI_REQ_READ             4U
 #define UI_REQ_SCAN             5U
+#define UI_REQ_JOIN             6U
 
 /* Answers of the main loop, rendered by the tick of the interface. */
 #define UI_STATUS_NONE          0U
@@ -206,6 +208,15 @@ static const char *TAG = "TASK_DISPLAY";    /* only used by the LOGx macros */
 #define UI_ACT_DET_HIGH         9U
 #define UI_ACT_DET_BACK         10U
 #define UI_ACT_WIFI             11U
+#define UI_ACT_KEY_TURN         12U
+#define UI_ACT_KEY_SET          13U
+#define UI_ACT_KEY_DELETE       14U
+#define UI_ACT_KEY_CONNECT      15U
+
+/* The networks of the WiFi screen carry their slot number instead of an action
+   code, the way the six cards do. The range sits above every other code so the
+   handler can recognise it before it looks at the cards. */
+#define UI_ACT_NET_BASE         0x40U
 
 /* The six cards of the main screen carry their own index in the context instead
    of an action code, so one handler serves them and the rows of the list screens
@@ -317,6 +328,25 @@ static ui_card_t s_cards[UI_CARD_COUNT] =
 /* Room the name of an access point gets; the rest of the row is the signal. */
 #define UI_WIFI_NAME_W          145
 
+/* Rows of the password screen. */
+#define UI_KEY_NETWORK          0U
+#define UI_KEY_PASSWORD         1U
+#define UI_KEY_LETTER           2U
+#define UI_KEY_SET              3U
+#define UI_KEY_DELETE           4U
+#define UI_KEY_CONNECT          5U
+
+/* The character wheel. Room for the window around the cursor, and the room its
+   row leaves for it once the caption is drawn. */
+#define UI_WHEEL_LEN            48U
+#define UI_WHEEL_W              160
+
+/* How many steps either side of the cursor the window shows. */
+#define UI_WHEEL_SPAN           3
+
+/* One passphrase character set per entry, plus the names the Set row shows. */
+#define UI_KEYSET_COUNT         4U
+
 /* Backlight steps the knob cycles through, the first entry is what
    dev_lcd_init() leaves behind. */
 #define UI_BRIGHT_COUNT         5U
@@ -332,7 +362,34 @@ static const uint32_t s_periods[UI_PERIOD_COUNT] = { 2000U, 5000U, 10000U, 30000
    screen barely uses its own: it names the card it opens instead. */
 static const char *s_titles[UI_SCREEN_COUNT] =
 {
-    "ENV MONITOR", "SETTINGS", "LINK", "DETAIL", "WIFI"
+    "ENV MONITOR", "SETTINGS", "LINK", "DETAIL", "WIFI", "PASSWORD"
+};
+
+/* The characters the wheel walks through. Lower case and digits come first
+   because that is what most passphrases are made of. Each line carries one
+   extra slot at its end, OK, and that slot is how the knob gets back out of the
+   wheel and on to the other rows of the screen. */
+static const char *s_keysets[UI_KEYSET_COUNT] =
+{
+    "abcdefghijklmnopqrstuvwxyz",
+    "0123456789-_.",
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    "!@#$%^&*()+=:;,.?/"
+};
+
+static const char *s_keyset_names[UI_KEYSET_COUNT] =
+{
+    "abc", "123", "ABC", "#$%"
+};
+
+/* Context of the ten network rows, indexed by slot. */
+static const uint8_t s_net_ctx[UI_WIFI_SLOTS] =
+{
+    (uint8_t)(UI_ACT_NET_BASE + 0U), (uint8_t)(UI_ACT_NET_BASE + 1U),
+    (uint8_t)(UI_ACT_NET_BASE + 2U), (uint8_t)(UI_ACT_NET_BASE + 3U),
+    (uint8_t)(UI_ACT_NET_BASE + 4U), (uint8_t)(UI_ACT_NET_BASE + 5U),
+    (uint8_t)(UI_ACT_NET_BASE + 6U), (uint8_t)(UI_ACT_NET_BASE + 7U),
+    (uint8_t)(UI_ACT_NET_BASE + 8U), (uint8_t)(UI_ACT_NET_BASE + 9U)
 };
 
 /* ------------------------------------------------------------------
@@ -391,6 +448,21 @@ static lv_obj_t     *s_wifi_name[UI_WIFI_SLOTS];
 static lv_obj_t     *s_wifi_signal[UI_WIFI_SLOTS];
 static task_net_ap_t s_wifi_ap[UI_WIFI_SLOTS];
 
+/* The password screen: what was picked, what has been typed, and where the
+   wheel stands. The wheel is the one place of the interface where a turn does
+   not move the focus, so it carries a flag of its own. */
+static lv_obj_t     *s_key_net;
+static lv_obj_t     *s_key_text;
+static lv_obj_t     *s_key_wheel_lbl;
+static lv_obj_t     *s_key_set_lbl;
+static char          s_key_ssid[TASK_NET_SSID_LEN];
+static char          s_key_pass[TASK_NET_PASS_LEN];
+static uint8_t       s_key_len;
+static uint8_t       s_key_set;
+static uint8_t       s_key_cursor;
+static uint8_t       s_key_wheel;       /* 1 while the knob turns the wheel */
+static int32_t       s_key_steps;       /* turns latched, applied by the tick */
+
 /* Written by the LVGL task and read by the main loop, one byte either way. */
 static volatile uint8_t s_request;
 static volatile uint8_t s_status;
@@ -447,6 +519,12 @@ static const uint8_t s_act_det_back = UI_ACT_DET_BACK;
 /* The WiFi screen, reached from the settings screen. */
 static const uint8_t s_act_wifi     = UI_ACT_WIFI;
 
+/* The password screen. */
+static const uint8_t s_act_key_turn    = UI_ACT_KEY_TURN;
+static const uint8_t s_act_key_set     = UI_ACT_KEY_SET;
+static const uint8_t s_act_key_delete  = UI_ACT_KEY_DELETE;
+static const uint8_t s_act_key_connect = UI_ACT_KEY_CONNECT;
+
 /* Context of the six cards, indexed by UI_CARD_xxx: the first five ask the node for
    their own reading, the sixth opens the settings. */
 static const uint8_t s_card_ctx[UI_CARD_COUNT] =
@@ -466,12 +544,18 @@ static void Display_BuildSettings(void);
 static void Display_BuildLink(void);
 static void Display_BuildDetail(void);
 static void Display_BuildWifi(void);
+static void Display_BuildKey(void);
 static void Display_ShowScreen(uint8_t screen);
 static void Display_Refresh(void);
 static void Display_UpdateSettings(void);
 static void Display_UpdateStatus(void);
 static void Display_UpdateDetail(void);
 static void Display_UpdateWifi(void);
+static void Display_KeyPrepare(uint8_t slot);
+static void Display_KeyRefresh(void);
+static void Display_KeyTick(void);
+static void Display_KeyClick(void);
+static void Display_KeyDelete(void);
 static void Display_BeginEdit(uint8_t side);
 static void Display_EndEdit(void);
 static void Display_EditTick(void);
@@ -727,6 +811,12 @@ static const char *Display_BarTitle(uint8_t screen)
             return (s_edit_side == 0U) ? "EDIT LOW" : "EDIT HIGH";
         }
         return s_cards[s_detail_card].caption;
+    }
+    if ((screen == UI_SCREEN_KEY) && (s_key_wheel != 0U))
+    {
+        /* The one place where a turn moves a character and not the focus, so
+           the bar says what the knob is doing instead of naming the screen. */
+        return "TURN";
     }
     return s_titles[screen];
 }
@@ -1399,14 +1489,11 @@ static void Display_BuildWifi(void)
 
     for (i = 0U; i < (uint8_t)UI_WIFI_SLOTS; i++)
     {
-        /* A slot is only there to be read, so it carries no action; the focus
-           marker, the scroll on focus and the group are handed to it by hand. */
+        /* A slot carries its own number, so a press on it opens the password
+           screen for that network. */
         row = Display_BuildRow(list, (uint8_t)(UI_WIFI_AP_FIRST + i), "--",
-                               &s_wifi_signal[i], s_group[UI_SCREEN_WIFI], NULL);
-        Display_MarkFocus(row, (lv_coord_t)UI_ROW_PAD_H);
-        lv_obj_set_scroll_on_focus(row, true);
-        lv_group_add_obj(s_group[UI_SCREEN_WIFI], row);
-
+                               &s_wifi_signal[i], s_group[UI_SCREEN_WIFI],
+                               &s_net_ctx[i]);
         s_wifi_row[i] = row;
         s_wifi_name[i] = Display_RowCaption(row);
         /* The driver allows 32 characters of name and the row has room for about
@@ -1461,6 +1548,13 @@ static void Display_OnAction(lv_event_t *event)
         return;
     }
     code = *action;
+    if (code >= UI_ACT_NET_BASE)
+    {
+        /* A network of the WiFi screen: open its password screen. */
+        Display_KeyPrepare((uint8_t)(code - UI_ACT_NET_BASE));
+        Display_ShowScreen(UI_SCREEN_KEY);
+        return;
+    }
     if (code >= UI_ACT_CARD_BASE)
     {
         /* A card of the main screen. */
@@ -1514,6 +1608,26 @@ static void Display_OnAction(lv_event_t *event)
         case UI_ACT_BRIGHT:
             Display_NextBrightness();
             break;
+        case UI_ACT_KEY_TURN:
+            /* The knob now belongs to the wheel until its closing slot is
+               pressed; the title says so. */
+            s_key_wheel = 1U;
+            s_key_steps = 0;
+            Display_SetBarTitle(UI_SCREEN_KEY);
+            Display_KeyRefresh();
+            break;
+        case UI_ACT_KEY_SET:
+            s_key_set = (uint8_t)((s_key_set + 1U) % (uint8_t)UI_KEYSET_COUNT);
+            s_key_cursor = 0U;
+            Display_KeyRefresh();
+            break;
+        case UI_ACT_KEY_DELETE:
+            Display_KeyDelete();
+            Display_KeyRefresh();
+            break;
+        case UI_ACT_KEY_CONNECT:
+            s_request = UI_REQ_JOIN;
+            break;
         case UI_ACT_WIFI:
             /* Open the screen and sweep on the way in, the way a phone does it:
                there is no button for it, a second visit sweeps again. */
@@ -1558,6 +1672,8 @@ static void Display_ShowScreen(uint8_t screen)
     s_edit_steps = 0;
     s_edit_click = 0U;
     s_edit_back = 0U;
+    s_key_wheel = 0U;              /* a turn of the wheel never crosses screens */
+    s_key_steps = 0;
     Display_SetBarTitle(screen);
 
     if (s_indev != NULL)
@@ -1587,6 +1703,9 @@ static void Display_Back(void)
             break;
         case UI_SCREEN_WIFI:
             Display_ShowScreen(UI_SCREEN_SET);
+            break;
+        case UI_SCREEN_KEY:
+            Display_ShowScreen(UI_SCREEN_WIFI);
             break;
         case UI_SCREEN_SET:
             Display_ShowScreen(UI_SCREEN_MAIN);
@@ -1728,6 +1847,16 @@ static void Display_EncoderRead(lv_indev_t *indev, lv_indev_data_t *data)
         {
             s_edit_click = 1U;
         }
+        data->enc_diff = 0;
+        data->state = LV_INDEV_STATE_RELEASED;
+        return;
+    }
+
+    if ((s_screen == UI_SCREEN_KEY) && (s_key_wheel != 0U))
+    {
+        /* The wheel owns the knob: turns move the character and nothing is
+           handed to LVGL. */
+        s_key_steps = s_key_steps + (int32_t)steps;
         data->enc_diff = 0;
         data->state = LV_INDEV_STATE_RELEASED;
         return;
@@ -1958,6 +2087,10 @@ static void Display_Refresh(void)
         Display_UpdateWifi();
         return;
     }
+    if (s_screen == UI_SCREEN_KEY)
+    {
+        return;                    /* every label of it is written on change */
+    }
     if (s_screen != UI_SCREEN_LINK)
     {
         return;
@@ -2073,6 +2206,212 @@ static void Display_UpdateWifi(void)
 }
 
 /**
+ * @brief  Prepare the password screen for one network of the list.
+ * @note   The passphrase is kept when the same network is picked again, so a
+ *         join that failed on a typo does not have to be typed from the start.
+ * @param  slot: index into the list the last sweep left behind.
+ */
+static void Display_KeyPrepare(uint8_t slot)
+{
+    if (slot >= s_wifi_count)
+    {
+        return;
+    }
+    if (strcmp(s_key_ssid, s_wifi_ap[slot].ssid) != 0)
+    {
+        s_key_len = 0U;
+        s_key_pass[0] = '\0';
+        strncpy(s_key_ssid, s_wifi_ap[slot].ssid, sizeof(s_key_ssid) - 1U);
+        s_key_ssid[sizeof(s_key_ssid) - 1U] = '\0';
+    }
+    s_key_set = 0U;
+    s_key_cursor = 0U;
+    s_key_wheel = 0U;
+    s_key_steps = 0;
+}
+
+/**
+ * @brief  Build the window of the wheel that is shown around the cursor.
+ * @note   The line wraps, and its last slot leaves the wheel, so that slot is
+ *         never more than one turn away from the first character.
+ * @param  out: destination buffer.
+ * @param  len: size of that buffer.
+ */
+static void Display_KeyWheel(char *out, size_t len)
+{
+    const char *set = s_keysets[s_key_set];
+    int32_t     total = (int32_t)strlen(set) + 1;
+    size_t      pos = 0U;
+    int32_t     i;
+
+    out[0] = '\0';
+    for (i = -(int32_t)UI_WHEEL_SPAN; i <= (int32_t)UI_WHEEL_SPAN; i++)
+    {
+        int32_t at = ((int32_t)s_key_cursor + i) % total;
+        int     written;
+
+        while (at < 0)
+        {
+            at += total;
+        }
+        if (at == (total - 1))
+        {
+            written = lv_snprintf(&out[pos], len - pos, "%sOK%s ",
+                                  (i == 0) ? "[" : "", (i == 0) ? "]" : "");
+        }
+        else
+        {
+            written = lv_snprintf(&out[pos], len - pos, "%s%c%s ",
+                                  (i == 0) ? "[" : "", set[at], (i == 0) ? "]" : "");
+        }
+        if (written < 0)
+        {
+            break;
+        }
+        if ((size_t)written >= (len - pos))
+        {
+            pos = len - 1U;
+            break;
+        }
+        pos += (size_t)written;
+    }
+}
+
+/**
+ * @brief  Write the three labels of the password screen.
+ */
+static void Display_KeyRefresh(void)
+{
+    char wheel[UI_WHEEL_LEN];
+
+    Display_SetText(s_key_net, s_key_ssid);
+    Display_SetText(s_key_text, (s_key_len > 0U) ? s_key_pass : "(empty)");
+    Display_SetText(s_key_set_lbl, s_keyset_names[s_key_set]);
+    Display_KeyWheel(wheel, sizeof(wheel));
+    Display_SetText(s_key_wheel_lbl, wheel);
+}
+
+/**
+ * @brief  Add one character to the passphrase.
+ * @param  c: the character.
+ */
+static void Display_KeyAppend(char c)
+{
+    if ((size_t)(s_key_len + 1U) >= sizeof(s_key_pass))
+    {
+        LOGW("the passphrase is as long as the field allows");
+        return;
+    }
+    s_key_pass[s_key_len] = c;
+    s_key_len++;
+    s_key_pass[s_key_len] = '\0';
+}
+
+/**
+ * @brief  Drop the last character of the passphrase.
+ */
+static void Display_KeyDelete(void)
+{
+    if (s_key_len == 0U)
+    {
+        return;
+    }
+    s_key_len--;
+    s_key_pass[s_key_len] = '\0';
+}
+
+/**
+ * @brief  Apply the turns the knob made while the wheel owns it.
+ * @note   The turns are applied in one go so a fast spin cannot outrun the
+ *         redraw, the same way the thresholds of the detail screen are served.
+ */
+static void Display_KeyTick(void)
+{
+    int32_t total;
+    int32_t at;
+
+    if (s_key_steps == 0)
+    {
+        return;
+    }
+    total = (int32_t)strlen(s_keysets[s_key_set]) + 1;
+    at = (int32_t)s_key_cursor + s_key_steps;
+    while (at < 0)
+    {
+        at += total;
+    }
+    s_key_cursor = (uint8_t)(at % total);
+    s_key_steps = 0;
+    Display_KeyRefresh();
+}
+
+/**
+ * @brief  Serve a press while the wheel owns the knob.
+ * @note   On a character it appends and stays, so a passphrase can be typed one
+ *         press after another; on the closing slot it hands the knob back to
+ *         the rows.
+ */
+static void Display_KeyClick(void)
+{
+    const char *set = s_keysets[s_key_set];
+    int32_t     total = (int32_t)strlen(set) + 1;
+
+    if ((int32_t)s_key_cursor == (total - 1))
+    {
+        s_key_wheel = 0U;
+        s_key_steps = 0;
+        Display_SetBarTitle(UI_SCREEN_KEY);
+    }
+    else
+    {
+        Display_KeyAppend(set[s_key_cursor]);
+    }
+    Display_KeyRefresh();
+}
+
+/**
+ * @brief  Password screen: pick a network and type its passphrase.
+ * @note   The wheel is the one row of the interface that takes the knob for
+ *         itself: while it is on, a turn moves the character and not the focus.
+ *         That is the same trade the detail screen makes for a threshold, and it
+ *         is why the wheel carries a closing slot: without a way back out, the
+ *         knob could never reach Connect.
+ */
+static void Display_BuildKey(void)
+{
+    lv_obj_t *list;
+    lv_obj_t *row;
+
+    s_scr[UI_SCREEN_KEY] = Display_CreateScreen();
+    s_group[UI_SCREEN_KEY] = lv_group_create();
+    lv_group_set_wrap(s_group[UI_SCREEN_KEY], true);
+    Display_BuildBar(UI_SCREEN_KEY);
+    list = Display_CreateList(s_scr[UI_SCREEN_KEY]);
+
+    Display_BuildRow(list, UI_KEY_NETWORK, "Network", &s_key_net, NULL, NULL);
+    Display_BuildRow(list, UI_KEY_PASSWORD, "Password", &s_key_text, NULL, NULL);
+
+    row = Display_BuildRow(list, UI_KEY_LETTER, "Letter", &s_key_wheel_lbl,
+                           s_group[UI_SCREEN_KEY], &s_act_key_turn);
+    /* The wheel is the only value of the interface that is longer than a word,
+       so its row is the only one whose label is given a width of its own. */
+    lv_obj_set_width(s_key_wheel_lbl, (lv_coord_t)UI_WHEEL_W);
+    lv_label_set_long_mode(s_key_wheel_lbl, LV_LABEL_LONG_DOT);
+    s_first[UI_SCREEN_KEY] = row;
+
+    Display_BuildRow(list, UI_KEY_SET, "Set", &s_key_set_lbl,
+                     s_group[UI_SCREEN_KEY], &s_act_key_set);
+    Display_BuildRow(list, UI_KEY_DELETE, "Delete", NULL,
+                     s_group[UI_SCREEN_KEY], &s_act_key_delete);
+    Display_BuildRow(list, UI_KEY_CONNECT, "Connect", NULL,
+                     s_group[UI_SCREEN_KEY], &s_act_key_connect);
+
+    (void)Display_BuildBackRow(s_scr[UI_SCREEN_KEY], s_group[UI_SCREEN_KEY],
+                               &s_act_wifi);
+    Display_KeyRefresh();
+}
+
+/**
  * @brief  Text of one answer of the main loop.
  * @param  code: UI_STATUS_xxx.
  * @retval the text, empty for UI_STATUS_NONE.
@@ -2147,16 +2486,34 @@ static void Display_Tick(lv_timer_t *timer)
     /* While a threshold is being turned the knob belongs to the value, so that is
        settled first: those detents never reach the focus ring. */
     Display_EditTick();
+    Display_KeyTick();
 
     if (s_back_pending != 0U)
     {
         s_back_pending = 0U;
-        Display_Back();
+        if ((s_screen == UI_SCREEN_KEY) && (s_key_wheel != 0U))
+        {
+            /* Holding the knob in the wheel strikes the last character; the way
+               out of the wheel is its closing slot, not the hold. */
+            Display_KeyDelete();
+            Display_KeyRefresh();
+        }
+        else
+        {
+            Display_Back();
+        }
     }
     if (s_click_pending != 0U)
     {
         s_click_pending = 0U;
-        Display_ActivateFocused();
+        if ((s_screen == UI_SCREEN_KEY) && (s_key_wheel != 0U))
+        {
+            Display_KeyClick();
+        }
+        else
+        {
+            Display_ActivateFocused();
+        }
     }
 
     /* A setting the main loop moved has to reach its label from the LVGL task, and
@@ -2245,6 +2602,19 @@ static void Display_RunScan(void)
 }
 
 /**
+ * @brief  Join the network that was picked, with the passphrase that was typed.
+ * @note   A request and not a call from the interface: it writes the settings
+ *         area, which is flash, and it rebuilds the driver configuration.
+ */
+static void Display_RunJoin(void)
+{
+    if (Task_Net_Join(s_key_ssid, s_key_pass) == 0U)
+    {
+        LOGW("the join was refused");
+    }
+}
+
+/**
  * @brief  Toggle the buzzer of the node.
  */
 static void Display_RunBeep(void)
@@ -2320,6 +2690,13 @@ void Task_Display_Init(void)
     s_set_dirty = 0U;
     s_wifi_count = 0U;
     s_wifi_seen = TASK_NET_SCAN_IDLE;
+    s_key_ssid[0] = '\0';
+    s_key_pass[0] = '\0';
+    s_key_len = 0U;
+    s_key_set = 0U;
+    s_key_cursor = 0U;
+    s_key_wheel = 0U;
+    s_key_steps = 0;
     memset(s_card_min, 0, sizeof(s_card_min));
     memset(s_card_max, 0, sizeof(s_card_max));
     memset(s_card_seen, 0, sizeof(s_card_seen));
@@ -2371,6 +2748,7 @@ void Task_Display_Init(void)
     Display_BuildLink();
     Display_BuildDetail();
     Display_BuildWifi();
+    Display_BuildKey();
     lv_screen_load(s_scr[UI_SCREEN_MAIN]);
     Display_UpdateSettings();
     Display_Refresh();
@@ -2436,6 +2814,9 @@ void Task_Display_Poll(uint32_t now_ms)
             break;
         case UI_REQ_SCAN:
             Display_RunScan();
+            break;
+        case UI_REQ_JOIN:
+            Display_RunJoin();
             break;
         default:
             break;

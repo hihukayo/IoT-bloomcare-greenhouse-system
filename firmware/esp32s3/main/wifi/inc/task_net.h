@@ -117,4 +117,16 @@ uint8_t Task_Net_ScanState(void);
  */
 uint8_t Task_Net_ScanResults(task_net_ap_t *out, uint8_t max);
 
+/**
+ * @brief  Join an access point with the given passphrase.
+ * @note   Both are written into the settings area first, so a gateway that
+ *         reboots comes back on the network that was picked instead of on the
+ *         one compiled in. Call it from the main loop: it writes flash.
+ * @param  ssid: network to join, 1 .. 32 characters.
+ * @param  pass: passphrase, empty for an open network, at most 64 characters.
+ * @retval 1 when the join was started, 0 when the arguments do not fit or the
+ *         radio refused them.
+ */
+uint8_t Task_Net_Join(const char *ssid, const char *pass);
+
 #endif /* __TASK_NET_H */

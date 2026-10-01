@@ -427,6 +427,28 @@ void Task_Net_Init(void)
 }
 
 /**
+ * @brief  Tell whether a name is already in the list being built.
+ * @param  aps:   the list.
+ * @param  count: entries it already holds.
+ * @param  ssid:  name to look for.
+ * @retval 1 when the name is already there.
+ */
+static uint8_t Task_Net_HasName(const task_net_ap_t *aps, uint8_t count,
+                                const char *ssid)
+{
+    uint8_t i;
+
+    for (i = 0U; i < count; i++)
+    {
+        if (strcmp(aps[i].ssid, ssid) == 0)
+        {
+            return 1U;
+        }
+    }
+    return 0U;
+}
+
+/**
  * @brief  Collect what the radio found and hand the list to the interface.
  * @note   Main loop only. The driver hands the list over sorted by signal, so
  *         what does not fit in the buffer is the weakest around; the call frees
@@ -448,8 +470,23 @@ static void Task_Net_ScanCollect(void)
     }
     for (i = 0U; (i < num) && (n < (uint8_t)TASK_NET_SCAN_MAX); i++)
     {
-        Task_Net_Copy(s_scan_aps[n].ssid, sizeof(s_scan_aps[n].ssid),
-                      (const char *)s_scan_raw[i].ssid);
+        const char *name = (const char *)s_scan_raw[i].ssid;
+
+        /* A mesh, a repeater or a router that puts one name on two radios makes
+           the driver report that name once per radio. The list comes sorted by
+           signal, so the first of a name is its strongest, which is the one to
+           show and the one to join; the rest are the same network again.
+           A name that came back empty is a hidden network: there is nothing to
+           show and nothing to pick, so it is left out as well. */
+        if (name[0] == '\0')
+        {
+            continue;
+        }
+        if (Task_Net_HasName(s_scan_aps, n, name) != 0U)
+        {
+            continue;
+        }
+        Task_Net_Copy(s_scan_aps[n].ssid, sizeof(s_scan_aps[n].ssid), name);
         s_scan_aps[n].rssi = s_scan_raw[i].rssi;
         s_scan_aps[n].locked = (s_scan_raw[i].authmode != WIFI_AUTH_OPEN) ? 1U : 0U;
         n++;
@@ -592,6 +629,69 @@ uint8_t Task_Net_ScanResults(task_net_ap_t *out, uint8_t max)
         out[i] = s_scan_aps[i];
     }
     return n;
+}
+
+/**
+ * @brief  Join an access point with the given passphrase.
+ * @param  ssid: network to join.
+ * @param  pass: passphrase, empty for an open network.
+ * @retval 1 when the join was started, 0 otherwise.
+ */
+uint8_t Task_Net_Join(const char *ssid, const char *pass)
+{
+    nvs_handle_t  handle;
+    wifi_config_t sta_cfg;
+
+    if ((ssid == NULL) || (ssid[0] == '\0') || (strlen(ssid) >= TASK_NET_SSID_LEN))
+    {
+        LOGW("that name does not fit");
+        return 0U;
+    }
+    if ((pass == NULL) || (strlen(pass) >= TASK_NET_PASS_LEN))
+    {
+        LOGW("that passphrase does not fit");
+        return 0U;
+    }
+
+    /* The settings first: a gateway that loses power before the answer arrives
+       still comes back on the network that was just picked. */
+    if (nvs_open(TASK_NET_NVS_NS, NVS_READWRITE, &handle) != ESP_OK)
+    {
+        LOGW("no settings area, the credentials are not kept");
+    }
+    else
+    {
+        (void)nvs_set_str(handle, TASK_NET_NVS_SSID, ssid);
+        (void)nvs_set_str(handle, TASK_NET_NVS_PASS, pass);
+        (void)nvs_commit(handle);
+        nvs_close(handle);
+    }
+
+    Task_Net_Copy(s_ssid, sizeof(s_ssid), ssid);
+    Task_Net_Copy(s_pass, sizeof(s_pass), pass);
+
+    memset(&sta_cfg, 0, sizeof(sta_cfg));
+    memcpy(sta_cfg.sta.ssid, s_ssid, sizeof(sta_cfg.sta.ssid) - 1U);
+    memcpy(sta_cfg.sta.password, s_pass, sizeof(sta_cfg.sta.password) - 1U);
+    /* The network was picked from a scan, so whatever it asks for is accepted;
+       the WPA2 floor only belongs on the fallback path of the boot. */
+    sta_cfg.sta.threshold.authmode = WIFI_AUTH_OPEN;
+
+    if (esp_wifi_set_config(WIFI_IF_STA, &sta_cfg) != ESP_OK)
+    {
+        LOGW("the radio refused the new credentials");
+        return 0U;
+    }
+
+    s_configured = 1U;
+    s_attempts = 0U;
+    s_try_at = 0U;
+    s_ip[0] = '\0';
+    (void)esp_wifi_disconnect();       /* the driver may already be joining */
+    s_want_connect = 1U;
+    Task_Net_SetState(TASK_NET_CONNECTING);
+    LOGI("joining %s", s_ssid);
+    return 1U;
 }
 
 /**
