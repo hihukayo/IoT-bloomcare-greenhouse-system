@@ -213,6 +213,7 @@ static const char *TAG = "TASK_DISPLAY";    /* only used by the LOGx macros */
 #define UI_ACT_KEY_SET          13U
 #define UI_ACT_KEY_DELETE       14U
 #define UI_ACT_KEY_CONNECT      15U
+#define UI_ACT_KEY_CLEAR        16U
 
 /* The networks of the WiFi screen carry their slot number instead of an action
    code, the way the six cards do. The range sits above every other code so the
@@ -335,7 +336,8 @@ static ui_card_t s_cards[UI_CARD_COUNT] =
 #define UI_KEY_LETTER           2U
 #define UI_KEY_SET              3U
 #define UI_KEY_DELETE           4U
-#define UI_KEY_CONNECT          5U
+#define UI_KEY_CLEAR            5U
+#define UI_KEY_CONNECT          6U
 
 /* The character wheel. Room for the window around the cursor, and the room its
    row leaves for it once the caption is drawn. */
@@ -457,6 +459,7 @@ static lv_obj_t     *s_key_text;
 static lv_obj_t     *s_key_wheel_lbl;
 static lv_obj_t     *s_key_set_lbl;
 static lv_obj_t     *s_key_delete_lbl;
+static lv_obj_t     *s_key_clear_lbl;
 static char          s_key_ssid[TASK_NET_SSID_LEN];
 static char          s_key_pass[TASK_NET_PASS_LEN];
 static uint8_t       s_key_len;
@@ -525,6 +528,7 @@ static const uint8_t s_act_wifi     = UI_ACT_WIFI;
 static const uint8_t s_act_key_turn    = UI_ACT_KEY_TURN;
 static const uint8_t s_act_key_set     = UI_ACT_KEY_SET;
 static const uint8_t s_act_key_delete  = UI_ACT_KEY_DELETE;
+static const uint8_t s_act_key_clear   = UI_ACT_KEY_CLEAR;
 static const uint8_t s_act_key_connect = UI_ACT_KEY_CONNECT;
 
 /* Context of the six cards, indexed by UI_CARD_xxx: the first five ask the node for
@@ -558,6 +562,7 @@ static void Display_KeyRefresh(void);
 static void Display_KeyTick(void);
 static void Display_KeyClick(void);
 static void Display_KeyDelete(void);
+static void Display_KeyClear(void);
 static void Display_BeginEdit(uint8_t side);
 static void Display_EndEdit(void);
 static void Display_EditTick(void);
@@ -1628,6 +1633,10 @@ static void Display_OnAction(lv_event_t *event)
             Display_KeyDelete();
             Display_KeyRefresh();
             break;
+        case UI_ACT_KEY_CLEAR:
+            Display_KeyClear();
+            Display_KeyRefresh();
+            break;
         case UI_ACT_KEY_CONNECT:
             s_request = UI_REQ_JOIN;
             break;
@@ -2334,6 +2343,21 @@ static void Display_KeyDelete(void)
 }
 
 /**
+ * @brief  Throw the whole passphrase away.
+ * @note   The long way round is the Delete row once per character, which is
+ *         tiresome on a field of thirty; this is the same thing in one press.
+ */
+static void Display_KeyClear(void)
+{
+    if (s_key_len == 0U)
+    {
+        return;
+    }
+    s_key_len = 0U;
+    s_key_pass[0] = '\0';
+}
+
+/**
  * @brief  Apply the turns the knob made while the wheel owns it.
  * @note   The turns are applied in one go so a fast spin cannot outrun the
  *         redraw, the same way the thresholds of the detail screen are served.
@@ -2423,6 +2447,9 @@ static void Display_BuildKey(void)
     Display_BuildRow(list, UI_KEY_DELETE, "Delete", &s_key_delete_lbl,
                      s_group[UI_SCREEN_KEY], &s_act_key_delete);
     lv_label_set_text(s_key_delete_lbl, "1 char");
+    Display_BuildRow(list, UI_KEY_CLEAR, "Clear", &s_key_clear_lbl,
+                     s_group[UI_SCREEN_KEY], &s_act_key_clear);
+    lv_label_set_text(s_key_clear_lbl, "all");
     Display_BuildRow(list, UI_KEY_CONNECT, "Connect", NULL,
                      s_group[UI_SCREEN_KEY], &s_act_key_connect);
 
