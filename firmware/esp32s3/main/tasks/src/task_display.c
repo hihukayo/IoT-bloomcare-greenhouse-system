@@ -271,9 +271,15 @@ typedef struct
 
    Every threshold can be turned across the whole span of the sensor behind it, so
    no reading the node can produce is out of reach: -40.0 to 80.0 for temperature,
-   0.0 to 100.0 % for humidity and for the soil probe, 0 to 5000 ppm for CO2 and
-   0 to 100000 lx for the light. The step is a whole number of the unit as the card
-   shows it, and every default below sits on that step. */
+   0.0 to 100.0 % for humidity, for the soil probe and for the light, and 0 to
+   5000 ppm for CO2. The step is a whole number of the unit as the card shows it,
+   and every default below sits on that step.
+
+   The light is a share of the reference and not a figure in lux: the node reads it
+   through the photodiode divider on its PF8, which is neither linear nor steady
+   over temperature. So its card carries the same 0.0 to 100.0 % span as the soil
+   probe, and not the 0 to 100000 lx this placeholder used to promise. Its two
+   thresholds sit at a fifth and at four fifths of that scale. */
 static ui_card_t s_cards[UI_CARD_COUNT] =
 {
     /* caption   unit           id                dec  margin
@@ -286,8 +292,8 @@ static ui_card_t s_cards[UI_CARD_COUNT] =
       {     0, 500000, 10000,  40000 }, {      0, 500000, 10000, 120000 } },
     { "SOIL",  "%",            LINK_ID_SOIL,  1U,  1000,
       {     0,  10000,   100,   2500 }, {      0,  10000,   100,   8000 } },
-    { "LIGHT", "lx",           LINK_ID_LIGHT, 0U, 20000,
-      {     0, 1000000, 10000,  20000 }, {      0, 10000000, 100000, 200000 } },
+    { "LIGHT", "%",            LINK_ID_LIGHT, 1U,  1000,
+      {     0,  10000,   100,   2000 }, {      0,  10000,   100,   8000 } },
     { "SYSTEM", "",            0U,            0U,     0,
       {     0,      0,     0,      0 }, {      0,      0,     0,      0 } }
 };
