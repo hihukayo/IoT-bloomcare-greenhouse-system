@@ -451,7 +451,7 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(SOIL_PWD_GPIO_Port, SOIL_PWD_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(SOIL_PWR_GPIO_Port, SOIL_PWR_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(DHT22_GPIO_Port, DHT22_Pin, GPIO_PIN_SET);
@@ -459,12 +459,12 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(BEEP_GPIO_Port, BEEP_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin : SOIL_PWD_Pin */
-  GPIO_InitStruct.Pin = SOIL_PWD_Pin;
+  /*Configure GPIO pin : SOIL_PWR_Pin */
+  GPIO_InitStruct.Pin = SOIL_PWR_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(SOIL_PWD_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(SOIL_PWR_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : DHT22_Pin */
   GPIO_InitStruct.Pin = DHT22_Pin;
