@@ -59,6 +59,8 @@ void Error_Handler(void);
 /* Private defines -----------------------------------------------------------*/
 #define LIGHT_SENSOR_Pin GPIO_PIN_8
 #define LIGHT_SENSOR_GPIO_Port GPIOF
+#define SOIL_SENSOR_Pin GPIO_PIN_1
+#define SOIL_SENSOR_GPIO_Port GPIOA
 #define DHT22_Pin GPIO_PIN_11
 #define DHT22_GPIO_Port GPIOG
 #define BEEP_Pin GPIO_PIN_8

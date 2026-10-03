@@ -763,6 +763,11 @@
               <FileType>1</FileType>
               <FilePath>..\Device\Sensors\Src\sen_light.c</FilePath>
             </File>
+            <File>
+              <FileName>sen_soil.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Device\Sensors\Src\sen_soil.c</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>

@@ -9,6 +9,7 @@
 #include "dev_manager.h"
 #include "sen_dht22.h"
 #include "sen_light.h"
+#include "sen_soil.h"
 #include "act_beep.h"
 #include <stdio.h>
 
@@ -25,6 +26,7 @@ static const Dev_Sensor_t *const s_sensors[] =
 {
     &g_sen_dht22,
     &g_sen_light,
+    &g_sen_soil,
 };
 
 static const Dev_Actuator_t *const s_actuators[] =

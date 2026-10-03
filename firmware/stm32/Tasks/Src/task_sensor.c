@@ -39,6 +39,7 @@ static uint8_t ChannelToItem(uint8_t ch)
     {
         case DEV_CH_TEMP:  return LINK_ID_TEMP;
         case DEV_CH_HUMI:  return LINK_ID_HUMI;
+        case DEV_CH_SOIL:  return LINK_ID_SOIL;
         case DEV_CH_LIGHT: return LINK_ID_LIGHT;
         default:           return 0U;
     }
@@ -68,6 +69,7 @@ static const char *ChannelUnit(uint8_t ch)
     {
         case DEV_CH_TEMP:  return "C";
         case DEV_CH_HUMI:  return "%RH";
+        case DEV_CH_SOIL:  return "%";
         case DEV_CH_LIGHT: return "%";
         default:           return "";
     }
