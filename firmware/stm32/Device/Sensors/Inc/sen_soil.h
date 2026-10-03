@@ -17,6 +17,7 @@
 #define __SEN_SOIL_H
 
 #include "main.h"
+#include "bsp_gpio.h"
 #include "dev_manager.h"
 
 /* ------------------------------------------------------------------
@@ -31,6 +32,29 @@
 
 #define SEN_SOIL_ADC            hadc1
 #define SEN_SOIL_CHANNEL        ADC_CHANNEL_1       /* PA1 is ADC1_IN1 */
+
+/* The pin that feeds the module, as CubeMX labelled it.
+ *
+ * A resistive probe is two bare prongs of metal standing in wet soil with a
+ * direct current across them, and that is an electrolytic cell: energised around
+ * the clock, the prongs are eaten away in a matter of weeks. So the module is fed
+ * from a pin that is raised for the moment of a measurement and dropped again,
+ * which brings the time spent under current from all of it down to about one per
+ * cent of it.
+ *
+ * The label in the .ioc reads SOIL_PWD rather than SOIL_PWR. That is a slip in
+ * the pinout, not a meaning: the driver spells it the way it meant it and points
+ * at the label here, so no other line of this file has to repeat it. */
+#define SEN_SOIL_PWR_PORT       SOIL_PWD_GPIO_Port
+#define SEN_SOIL_PWR_PIN        SOIL_PWD_Pin
+#define SEN_SOIL_PWR_CLK_ENABLE()   BSP_GPIO_ClkEnable(SEN_SOIL_PWR_PORT)
+
+/* How long the module is given between the pin coming up and the first
+   conversion. Its output stage answers in nanoseconds and the probe is a
+   resistive divider, so a few milliseconds would do; twenty is deliberate slack
+   against a module whose input capacitor is larger than expected, and it costs a
+   hundredth of the report period. */
+#define SEN_SOIL_SETTLE_MS      20U
 
 /* The two ends of the scale, as raw counts straight out of the probe.
  *

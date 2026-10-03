@@ -61,6 +61,8 @@ void Error_Handler(void);
 #define LIGHT_SENSOR_GPIO_Port GPIOF
 #define SOIL_SENSOR_Pin GPIO_PIN_1
 #define SOIL_SENSOR_GPIO_Port GPIOA
+#define SOIL_PWD_Pin GPIO_PIN_4
+#define SOIL_PWD_GPIO_Port GPIOC
 #define DHT22_Pin GPIO_PIN_11
 #define DHT22_GPIO_Port GPIOG
 #define BEEP_Pin GPIO_PIN_8
