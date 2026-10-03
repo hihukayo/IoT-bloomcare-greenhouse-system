@@ -115,12 +115,27 @@ static void dev_log_item(uint8_t id, int32_t value)
     case LINK_ID_HUMI:
         dev_log_x100("air humidity", value, "%RH");
         break;
+    case LINK_ID_CO2:
+        dev_log_x100("air CO2", value, "ppm");
+        break;
+    case LINK_ID_SOIL:
+        dev_log_x100("soil moisture", value, "%");
+        break;
+    case LINK_ID_LIGHT:
+        dev_log_x100("light", value, "%");
+        break;
     case LINK_ID_ERRCODE:
         LOGW("  sensor error code = %ld", (long)value);
         break;
     default:
-        /* unknown IDs are ignored, so both sides can be upgraded separately */
-        LOGW("  unknown item ID 0x%02X (value %ld), ignored", id, (long)value);
+        /* A reading this build has no name for. It still travels on to the Tasks
+           layer and reaches whichever card asks for it: all that is missing is
+           the wording here, which is the whole point of letting the two sides be
+           upgraded apart. This line used to say the item was ignored, which was
+           not true, and sent more than one reader after a bug that was not
+           there. */
+        LOGI("  item 0x%02X, value %ld (no name for it in this build)",
+             (unsigned)id, (long)value);
         break;
     }
 }
