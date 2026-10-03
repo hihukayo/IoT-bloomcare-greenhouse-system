@@ -79,6 +79,15 @@ Desktop.ini
 *.suo       # Visual Studio Solution User Options
 *.sln.docstates # Visual Studio
 
+# VS Code state that belongs to this machine and not to the project: the serial
+# port of the board, and absolute paths into the local toolchain and build
+# directory. Tracked, they dirty the worktree every time the board moves to
+# another USB port or the extension rewrites them, and the lines are of no use
+# to anyone else. launch.json stays tracked on purpose: it carries no path and
+# no port, and says how to attach the debugger.
+.vscode/settings.json
+.vscode/c_cpp_properties.json
+
 # Local bench credentials: a WiFi password never belongs in the repository.
 # Copy main/wifi/wifi_secrets.example.h to main/wifi/wifi_secrets.h and fill it in.
 main/wifi/wifi_secrets.h
