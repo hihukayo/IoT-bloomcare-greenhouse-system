@@ -41,6 +41,7 @@ static uint8_t ChannelToItem(uint8_t ch)
         case DEV_CH_HUMI:  return LINK_ID_HUMI;
         case DEV_CH_SOIL:  return LINK_ID_SOIL;
         case DEV_CH_LIGHT: return LINK_ID_LIGHT;
+        case DEV_CH_CO2:   return LINK_ID_CO2;
         default:           return 0U;
     }
 }
@@ -56,6 +57,7 @@ static const char *ChannelName(uint8_t ch)
         case DEV_CH_HUMI:  return "Humi";
         case DEV_CH_SOIL:  return "Soil";
         case DEV_CH_LIGHT: return "Light";
+        case DEV_CH_CO2:   return "CO2";
         default:           return "?";
     }
 }
@@ -71,6 +73,7 @@ static const char *ChannelUnit(uint8_t ch)
         case DEV_CH_HUMI:  return "%RH";
         case DEV_CH_SOIL:  return "%";
         case DEV_CH_LIGHT: return "%";
+        case DEV_CH_CO2:   return "ppm";
         default:           return "";
     }
 }

@@ -33,6 +33,7 @@
 #define DEV_CH_HUMI     0x02U
 #define DEV_CH_SOIL     0x03U
 #define DEV_CH_LIGHT    0x04U
+#define DEV_CH_CO2      0x05U
 
 /* Actuator channels start at 0x10, so one id can never name a sensor and an
    actuator at the same time. */
